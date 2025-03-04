@@ -3,7 +3,7 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/lgpl).
 # pylint: disable=C8101
 {
-    "name": "Py3o Mixin",
+    "name": "Py3o Extra",
     "version": "14.0.1.0.0",
     "website": "https://simetri-sinergi.id",
     "author": "OpenSynergy Indonesia, PT. Simetri Sinergi Indonesia",
