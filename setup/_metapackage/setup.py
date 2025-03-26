@@ -9,6 +9,7 @@ setuptools.setup(
     version=version,
     install_requires=[
         'odoo14-addon-ssi_py3o',
+        'odoo14-addon-ssi_py3o_print_mixin',
     ],
     classifiers=[
         'Programming Language :: Python',
