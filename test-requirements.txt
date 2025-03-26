@@ -1,1 +1,2 @@
 odoo14-addon-report-py3o
+odoo14-addon-ssi-print-mixin
