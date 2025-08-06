@@ -4,7 +4,7 @@
 # pylint: disable=C8101
 {
     "name": "Py3o Extra",
-    "version": "14.0.1.0.0",
+    "version": "14.0.1.1.0",
     "website": "https://simetri-sinergi.id",
     "author": "OpenSynergy Indonesia, PT. Simetri Sinergi Indonesia",
     "license": "AGPL-3",
@@ -12,5 +12,7 @@
     "depends": [
         "report_py3o",
     ],
-    "data": [],
+    "data": [
+        "views/ir_actions_report.xml",
+    ],
 }

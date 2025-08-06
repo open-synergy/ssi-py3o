@@ -4,4 +4,5 @@
 
 from . import (
     py3o_report,
+    ir_actions_report,
 )
