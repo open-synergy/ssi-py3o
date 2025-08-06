@@ -1,0 +1,22 @@
+<?xml version="1.0" ?>
+<!-- Copyright 2025 OpenSynergy Indonesia
+     Copyright 2025 PT. Simetri Sinergi Indonesia
+     License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl). -->
+<odoo>
+    <data>
+        <record id="report_sample_report_py3o" model="ir.actions.report">
+            <field name="name">Report Sample</field>
+            <field name="type">ir.actions.report</field>
+            <field name="model">res.users</field>
+            <field name="report_name">report_sample</field>
+            <field name="report_type">py3o</field>
+            <field name="py3o_filetype">pdf</field>
+            <field name="module">ssi_py3o_sample</field>
+            <field name="py3o_template_fallback">reports/report_sample.odt</field>
+            <field name="binding_model_id" ref="base.model_res_users" />
+            <field name="binding_type">report</field>
+            <field name="parser_loc">ssi_py3o_sample/reports/report_parser.py</field>
+            <field name="parser_state">loc</field>
+        </record>
+    </data>
+</odoo>
