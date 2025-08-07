@@ -4,6 +4,7 @@
 import importlib.util
 import logging
 import os
+import sys
 
 from odoo import _, api, models
 from odoo.exceptions import UserError
@@ -11,7 +12,7 @@ from odoo.tools.config import config
 
 logger = logging.getLogger(__name__)
 
-# CONTOH MENGGUNAKAN DECORATOR
+# CONTOH
 # @py3o_report_extender()
 # def get_config_paramater(report_xml, context):
 #     raise UserError(_("%s")%(context))
@@ -85,13 +86,30 @@ class Py3oReport(models.TransientModel):
             # Create unique module name
             mod_name = f"{self.env.cr.dbname}_{os.path.basename(filepath)[:-3]}_{key}"
 
+            # Add the module directory to Python path for relative imports
+            module_dir = os.path.dirname(filepath)
+            if module_dir not in sys.path:
+                sys.path.insert(0, module_dir)
+
             # Load module using importlib
             spec = importlib.util.spec_from_file_location(mod_name, filepath)
             if not spec or not spec.loader:
                 return None
 
             module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+
+            # Set module in sys.modules to enable proper import handling
+            sys.modules[mod_name] = module
+
+            try:
+                spec.loader.exec_module(module)
+            finally:
+                # Clean up sys.modules to avoid conflicts
+                if mod_name in sys.modules:
+                    del sys.modules[mod_name]
+                # Remove from path if we added it
+                if module_dir in sys.path:
+                    sys.path.remove(module_dir)
 
             # Get Parser class
             parser_class = getattr(module, "Parser", None)
@@ -106,9 +124,22 @@ class Py3oReport(models.TransientModel):
         return obj_config_param.get_param(key, "")
 
     def _exec_parser_code(self, code_str, env, data):
+        """Execute parser code with proper import support"""
+
+        global_namespace = {
+            "__builtins__": __builtins__,
+            "datetime": __import__("datetime"),
+            "json": __import__("json"),
+            "base64": __import__("base64"),
+            "math": __import__("math"),
+            "time": __import__("time"),
+            "re": __import__("re"),
+            "logging": logging,
+        }
+
         local_namespace = {}
         try:
-            exec(code_str, {}, local_namespace)
+            exec(code_str, global_namespace, local_namespace)
             ParserClass = local_namespace.get("Parser")
             if not ParserClass:
                 raise UserError(_("Parser class 'Parser' not found in parser code."))

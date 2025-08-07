@@ -21,6 +21,10 @@ class IrActionsReport(models.Model):
             ("loc", _("Location")),
         ],
         default="default",
+        help="Select the parser configuration method:\n"
+        "- Default: Use the standard parser\n"
+        "- Parser Code (Python): Define custom parser using Python code\n"
+        "- Location: Specify the path to an external parser file",
     )
 
     parser_loc = fields.Char(
