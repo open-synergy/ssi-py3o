@@ -29,7 +29,6 @@ class IrActionsReport(models.Model):
 
     parser_loc = fields.Char(
         string="Parser location",
-        size=128,
         help="Path to the parser location. Beginning of the path must be start \
               with the module name!\n Like this: {module name}/{path to the \
               parser.py file}",
