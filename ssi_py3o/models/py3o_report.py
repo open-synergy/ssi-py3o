@@ -48,6 +48,7 @@ class Py3oReport(models.TransientModel):
             logger.error("Error loading parser from %s: %s", path, str(e))
             return None
 
+    @api.model
     def _get_addons_paths(self):
         """Get list of addons paths"""
         paths = []
@@ -67,6 +68,7 @@ class Py3oReport(models.TransientModel):
         # Remove duplicates while preserving order
         return list(dict.fromkeys(paths))
 
+    @api.model
     def _find_parser_file(self, path, addons_paths):
         """Find parser file in addons paths"""
         for addons_path in addons_paths:
@@ -80,6 +82,7 @@ class Py3oReport(models.TransientModel):
                     return filepath
         return None
 
+    @api.model
     def _load_parser_class(self, filepath, key):
         """Load Parser class from Python file"""
         try:
@@ -119,10 +122,12 @@ class Py3oReport(models.TransientModel):
             logger.error("Failed to load parser class from %s: %s", filepath, str(e))
             return None
 
+    @api.model
     def _get_config_param(self, key):
         obj_config_param = self.env["ir.config_parameter"].sudo()
         return obj_config_param.get_param(key, "")
 
+    @api.model
     def _exec_parser_code(self, code_str, env, data):
         """Execute parser code with proper import support"""
 
@@ -147,6 +152,7 @@ class Py3oReport(models.TransientModel):
         except Exception as e:
             raise UserError(_("Parser execution error:\n%s") % str(e))
 
+    @api.model
     def _get_parser_context(self, model_instance, data):
         _super = super(Py3oReport, self)
         res = _super._get_parser_context(model_instance, data)
