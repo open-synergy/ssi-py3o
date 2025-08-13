@@ -9,7 +9,7 @@
     "author": "OpenSynergy Indonesia, PT. Simetri Sinergi Indonesia",
     "license": "AGPL-3",
     "installable": True,
-    "auto_install": True,
+    "auto_install": False,
     "depends": [
         "base",
         "ssi_py3o",
