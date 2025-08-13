@@ -3,16 +3,18 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/lgpl).
 # pylint: disable=C8101
 {
-    "name": "Py3o Extra",
-    "version": "14.0.1.1.0",
+    "name": "SSI Py3o Sample",
+    "version": "14.0.1.0.0",
     "website": "https://simetri-sinergi.id",
     "author": "OpenSynergy Indonesia, PT. Simetri Sinergi Indonesia",
     "license": "AGPL-3",
     "installable": True,
+    "auto_install": False,
     "depends": [
-        "report_py3o",
+        "base",
+        "ssi_py3o",
     ],
     "data": [
-        "views/ir_actions_report.xml",
+        "reports/report_sample.xml",
     ],
 }
