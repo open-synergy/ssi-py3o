@@ -18,7 +18,7 @@ Available addons
 ----------------
 addon | version | maintainers | summary
 --- | --- | --- | ---
-[ssi_py3o](ssi_py3o/) | 14.0.1.1.0 |  | Py3o Extra
+[ssi_py3o](ssi_py3o/) | 14.0.1.2.0 |  | Py3o Extra
 [ssi_py3o_print_mixin](ssi_py3o_print_mixin/) | 14.0.1.0.0 |  | Py3o + SSI Print Mixin
 [ssi_py3o_sample](ssi_py3o_sample/) | 14.0.1.0.0 |  | SSI Py3o Sample
 
