@@ -5,6 +5,9 @@ import importlib.util
 import logging
 import os
 import sys
+from inspect import isfunction
+
+import babel.dates
 
 from odoo import _, api, models
 from odoo.exceptions import UserError
@@ -22,6 +25,29 @@ logger = logging.getLogger(__name__)
 
 class Py3oReport(models.TransientModel):
     _inherit = "py3o.report"
+
+    # EXTRA FUNCTIONS
+    @api.model
+    def _get_config_param(self, key):
+        obj_config_param = self.env["ir.config_parameter"].sudo()
+        return obj_config_param.get_param(key, "")
+
+    @api.model
+    def _get_selection_label(self, rec, field_name):
+        result = "-"
+        field = rec._fields[field_name]
+        if field.related_field:
+            field = field.related_field
+
+        selection = field.selection
+
+        if isfunction(selection):
+            selection = selection(rec)
+
+        for value, label in selection:
+            if value == getattr(rec, field_name, False):
+                result = label
+        return result
 
     @api.model
     def load_from_file(self, path, key):
@@ -123,11 +149,6 @@ class Py3oReport(models.TransientModel):
             return None
 
     @api.model
-    def _get_config_param(self, key):
-        obj_config_param = self.env["ir.config_parameter"].sudo()
-        return obj_config_param.get_param(key, "")
-
-    @api.model
     def _exec_parser_code(self, code_str, env, data):
         """Execute parser code with proper import support"""
 
@@ -140,6 +161,8 @@ class Py3oReport(models.TransientModel):
             "time": __import__("time"),
             "re": __import__("re"),
             "logging": logging,
+            "babel": __import__("babel"),
+            "babel_dates": babel.dates,
         }
 
         local_namespace = {}
@@ -156,7 +179,10 @@ class Py3oReport(models.TransientModel):
     def _get_parser_context(self, model_instance, data):
         _super = super(Py3oReport, self)
         res = _super._get_parser_context(model_instance, data)
+        # EXTRA FUNCTIONS
         res["parameter_value"] = self._get_config_param
+        res["selection_label"] = self._get_selection_label
+
         report = self.ir_actions_report_id
         if report.parser_state == "code":
             parser = None
