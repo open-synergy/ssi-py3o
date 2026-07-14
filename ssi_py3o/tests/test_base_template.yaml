@@ -1,0 +1,95 @@
+options:
+  auto_refresh: true
+
+scenarios:
+  - name: "py3o_is_odt_template — ODT fallback template is detected as ODT"
+    steps:
+      - step: "Create py3o report with ODT fallback template"
+        action: "create"
+        model: "ir.actions.report"
+        save_as: "report"
+        values:
+          name: "Test Report"
+          model: "res.partner"
+          report_name: "ssi_py3o.test_report_odt"
+          report_type: "py3o"
+          py3o_filetype: "pdf"
+          py3o_template_fallback: "reports/x.odt"
+      - step: "Assert py3o_is_odt_template is True"
+        action: "assert"
+        target: "report"
+        asserts:
+          py3o_is_odt_template:
+            type: "value"
+            expected: true
+
+  - name: "py3o_is_odt_template — ODS fallback template is not ODT"
+    steps:
+      - step: "Create py3o report with ODS fallback template"
+        action: "create"
+        model: "ir.actions.report"
+        save_as: "report"
+        values:
+          name: "Test Report"
+          model: "res.partner"
+          report_name: "ssi_py3o.test_report_ods"
+          report_type: "py3o"
+          py3o_filetype: "pdf"
+          py3o_template_fallback: "reports/x.ods"
+      - step: "Assert py3o_is_odt_template is False"
+        action: "assert"
+        target: "report"
+        asserts:
+          py3o_is_odt_template:
+            type: "value"
+            expected: false
+
+  - name: "py3o_is_odt_template — FODT (flat XML) is not a zip ODT package"
+    steps:
+      - step: "Create py3o report with FODT fallback template"
+        action: "create"
+        model: "ir.actions.report"
+        save_as: "report"
+        values:
+          name: "Test Report"
+          model: "res.partner"
+          report_name: "ssi_py3o.test_report_fodt"
+          report_type: "py3o"
+          py3o_filetype: "pdf"
+          py3o_template_fallback: "reports/x.fodt"
+      - step: "Assert py3o_is_odt_template is False"
+        action: "assert"
+        target: "report"
+        asserts:
+          py3o_is_odt_template:
+            type: "value"
+            expected: false
+
+  - name: "py3o_is_odt_template — py3o_template_id takes priority over fallback"
+    steps:
+      - step: "Create an ODS py3o.template"
+        action: "create"
+        model: "py3o.template"
+        save_as: "template"
+        values:
+          name: "Test ODS Template"
+          filetype: "ods"
+      - step: "Create py3o report with ODS template and ODT fallback"
+        action: "create"
+        model: "ir.actions.report"
+        save_as: "report"
+        values:
+          name: "Test Report"
+          model: "res.partner"
+          report_name: "ssi_py3o.test_report_priority"
+          report_type: "py3o"
+          py3o_filetype: "pdf"
+          py3o_template_id: "REC: template.id"
+          py3o_template_fallback: "reports/x.odt"
+      - step: "Assert py3o_is_odt_template is False (template wins over fallback)"
+        action: "assert"
+        target: "report"
+        asserts:
+          py3o_is_odt_template:
+            type: "value"
+            expected: false

@@ -16,6 +16,15 @@
                     widget="ace"
                     attrs="{'invisible': [('parser_state', '!=', 'code')], 'required': [('parser_state', '=', 'code')]}"
                 />
+                <field name="py3o_is_odt_template" invisible="1" />
+                <field
+                    name="py3o_no_base_template"
+                    attrs="{'invisible': [('py3o_is_odt_template', '=', False)]}"
+                />
+                <field
+                    name="py3o_base_template_id"
+                    attrs="{'invisible': ['|', ('py3o_is_odt_template', '=', False), ('py3o_no_base_template', '=', True)]}"
+                />
             </xpath>
         </field>
     </record>
