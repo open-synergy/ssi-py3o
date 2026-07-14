@@ -15,7 +15,7 @@ ODT_MIMETYPE = "application/vnd.oasis.opendocument.text"
 
 _CONTENT_XML = (
     b'<?xml version="1.0" encoding="UTF-8"?>'
-    b'<office:document-content '
+    b"<office:document-content "
     b'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0">'
     b"<office:body><office:text/></office:body>"
     b"</office:document-content>"
@@ -46,7 +46,7 @@ def _build_odt(styles_xml, extra_files=None):
 
     manifest_xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        '<manifest:manifest xmlns:manifest='
+        "<manifest:manifest xmlns:manifest="
         '"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" '
         'manifest:version="1.2">' + "".join(manifest_entries) + "</manifest:manifest>"
     )
@@ -166,7 +166,9 @@ LOGO_PNG_BYTES = b"\x89PNG\r\n\x1a\nFAKE-BASE-LOGO-BYTES-FOR-TESTS"
 
 
 def base_odt():
-    return _build_odt(BASE_STYLES_XML, extra_files={"Pictures/logo.png": LOGO_PNG_BYTES})
+    return _build_odt(
+        BASE_STYLES_XML, extra_files={"Pictures/logo.png": LOGO_PNG_BYTES}
+    )
 
 
 def report_odt(extra_files=None):

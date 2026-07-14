@@ -76,7 +76,9 @@ class TestOdfMerge(TransactionCase):
     def test_report_geometry_survives(self):
         merged = self._merge()
         styles_root = self._styles_of(merged)
-        props = self._page_layout(styles_root).find(_q("style", "page-layout-properties"))
+        props = self._page_layout(styles_root).find(
+            _q("style", "page-layout-properties")
+        )
         self.assertEqual(props.get(_q("fo", "page-width")), "11.69in")
         self.assertEqual(props.get(_q("style", "print-orientation")), "landscape")
         self.assertEqual(props.get(_q("fo", "margin-left")), "2cm")
@@ -84,7 +86,9 @@ class TestOdfMerge(TransactionCase):
     def test_margins_copied(self):
         merged = self._merge()
         styles_root = self._styles_of(merged)
-        props = self._page_layout(styles_root).find(_q("style", "page-layout-properties"))
+        props = self._page_layout(styles_root).find(
+            _q("style", "page-layout-properties")
+        )
         self.assertEqual(props.get(_q("fo", "margin-top")), "0.7874in")
         self.assertEqual(props.get(_q("fo", "margin-bottom")), "0.7874in")
 
@@ -204,14 +208,14 @@ class TestOdfMerge(TransactionCase):
     def test_skip_non_odt_template(self):
         template_data = base64.b64encode(report_odt())
         base_template_data = base64.b64encode(base_odt())
-        report = self._create_report(
-            py3o_filetype="pdf", template_data=template_data
-        )
+        report = self._create_report(py3o_filetype="pdf", template_data=template_data)
         report.py3o_template_id.filetype = "ods"
         report.py3o_base_template_id = self._create_template(
             "Base", "odt", base_template_data
         )
-        py3o_report = self.env["py3o.report"].create({"ir_actions_report_id": report.id})
+        py3o_report = self.env["py3o.report"].create(
+            {"ir_actions_report_id": report.id}
+        )
         result = py3o_report.get_template(self.env["res.partner"])
         self.assertEqual(result, base64.b64decode(template_data))
 
@@ -221,7 +225,9 @@ class TestOdfMerge(TransactionCase):
         report.py3o_base_template_id = self._create_template(
             "Corrupt Base", "odt", base64.b64encode(b"not a zip")
         )
-        py3o_report = self.env["py3o.report"].create({"ir_actions_report_id": report.id})
+        py3o_report = self.env["py3o.report"].create(
+            {"ir_actions_report_id": report.id}
+        )
         with self.assertLogs("odoo.addons.ssi_py3o", level="ERROR"):
             result = py3o_report.get_template(self.env["res.partner"])
         self.assertEqual(result, base64.b64decode(template_data))
@@ -233,7 +239,9 @@ class TestOdfMerge(TransactionCase):
     def test_extender_registers_company(self):
         template_data = base64.b64encode(report_odt())
         report = self._create_report(py3o_filetype="pdf", template_data=template_data)
-        py3o_report = self.env["py3o.report"].create({"ir_actions_report_id": report.id})
+        py3o_report = self.env["py3o.report"].create(
+            {"ir_actions_report_id": report.id}
+        )
         # A fresh partner with no company_id of its own, so the extender must
         # fall back to env.company rather than "objects[0].company_id".
         partner = self.env["res.partner"].create({"name": "No Company Partner"})
