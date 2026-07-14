@@ -1,0 +1,181 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* ssi_py3o
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 14.0\n"
+"Report-Msgid-Bugs-To: \n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: \n"
+"Plural-Forms: \n"
+
+#. module: ssi_py3o
+#: model:ir.model,name:ssi_py3o.model_res_company
+msgid "Companies"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/ir_actions_report.py:0
+#: model:ir.model.fields.selection,name:ssi_py3o.selection__ir_actions_report__parser_state__default
+#, python-format
+msgid "Default"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,help:ssi_py3o.field_res_company__py3o_base_template_id
+msgid ""
+"Default ODT template whose header/footer is merged into every py3o report "
+"using an ODT template, unless the report defines its own 'Py3o Base "
+"Template' or opts out with 'No Base Template'."
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report__display_name
+#: model:ir.model.fields,field_description:ssi_py3o.field_py3o_report__display_name
+#: model:ir.model.fields,field_description:ssi_py3o.field_res_company__display_name
+msgid "Display Name"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report__id
+#: model:ir.model.fields,field_description:ssi_py3o.field_py3o_report__id
+#: model:ir.model.fields,field_description:ssi_py3o.field_res_company__id
+msgid "ID"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,help:ssi_py3o.field_ir_actions_report__py3o_no_base_template
+msgid ""
+"If checked, this report is never merged with a base template (letterhead), "
+"even if one is set on the report or on the company."
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report____last_update
+#: model:ir.model.fields,field_description:ssi_py3o.field_py3o_report____last_update
+#: model:ir.model.fields,field_description:ssi_py3o.field_res_company____last_update
+msgid "Last Modified on"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/ir_actions_report.py:0
+#: model:ir.model.fields.selection,name:ssi_py3o.selection__ir_actions_report__parser_state__loc
+#, python-format
+msgid "Location"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report__py3o_no_base_template
+msgid "No Base Template"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,help:ssi_py3o.field_ir_actions_report__py3o_base_template_id
+msgid ""
+"ODT template whose header/footer is merged into this report when rendered. "
+"Leave empty to fall back to the company's 'Py3o Base Template (Letterhead)'."
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/ir_actions_report.py:0
+#: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report__parser_code
+#: model:ir.model.fields.selection,name:ssi_py3o.selection__ir_actions_report__parser_state__code
+#, python-format
+msgid "Parser Code (Python)"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report.py:0
+#, python-format
+msgid "Parser class 'Parser' not found in parser code."
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report.py:0
+#, python-format
+msgid ""
+"Parser execution error:\n"
+"%s"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report__parser_loc
+msgid "Parser location"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,help:ssi_py3o.field_ir_actions_report__parser_loc
+msgid ""
+"Path to the parser location. Beginning of the path must be start               with the module name!\n"
+" Like this: {module name}/{path to the               parser.py file}"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report__py3o_base_template_id
+msgid "Py3o Base Template"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,field_description:ssi_py3o.field_res_company__py3o_base_template_id
+msgid "Py3o Base Template (Letterhead)"
+msgstr ""
+
+#. module: ssi_py3o
+#: model_terms:ir.ui.view,arch_db:ssi_py3o.view_company_form
+msgid "Py3o Report"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report__py3o_is_odt_template
+msgid "Py3o Template Is ODT"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,help:ssi_py3o.field_ir_actions_report__parser_code
+msgid ""
+"Python code defined as parser. Must define a 'Parser' class with "
+"__init__(self, env, docs)"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model,name:ssi_py3o.model_ir_actions_report
+msgid "Report Action"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model,name:ssi_py3o.model_py3o_report
+msgid "Report Py30"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,help:ssi_py3o.field_ir_actions_report__parser_state
+msgid ""
+"Select the parser configuration method:\n"
+"- Default: Use the standard parser\n"
+"- Parser Code (Python): Define custom parser using Python code\n"
+"- Location: Specify the path to an external parser file"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report__parser_state
+msgid "State of Parser"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report.py:0
+#, python-format
+msgid "Syntax Error in parser file: %s"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,help:ssi_py3o.field_ir_actions_report__py3o_is_odt_template
+msgid ""
+"Technical flag telling whether the py3o TEMPLATE (not the output format) "
+"used by this report is an ODT (zipped ODF text) package. Base template merge"
+" only applies when this is True: 'fodt' (flat XML) is not a zip package, so "
+"it is never considered ODT here."
+msgstr ""
