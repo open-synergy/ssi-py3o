@@ -14,5 +14,6 @@
     ],
     "data": [
         "views/ir_actions_report.xml",
+        "views/res_company.xml",
     ],
 }
