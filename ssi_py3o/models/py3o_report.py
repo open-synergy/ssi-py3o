@@ -616,8 +616,11 @@ class Py3oReport(models.TransientModel):
                 if child.tag == "li":
                     index += 1
                     prefix = "%d. " % index if tag == "ol" else "• "
+                    indent = '<text:s text:c="3"/>'
                     blocks.append(
-                        prefix + self._get_html_odf_inline(child, False, False, False)
+                        indent
+                        + prefix
+                        + self._get_html_odf_inline(child, False, False, False)
                     )
                 else:
                     self._get_html_odf_blocks(child, blocks)
