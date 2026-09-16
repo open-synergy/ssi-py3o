@@ -5,6 +5,7 @@ import importlib.util
 import logging
 import mimetypes
 import os
+import re
 import sys
 from copy import deepcopy
 from inspect import isfunction
@@ -12,7 +13,8 @@ from io import BytesIO
 from zipfile import ZIP_STORED, BadZipFile, ZipFile
 
 import babel.dates
-from lxml import etree
+from genshi.core import Markup
+from lxml import etree, html
 
 from odoo import _, api, models
 from odoo.exceptions import UserError
@@ -78,6 +80,16 @@ _STYLE_REF_ATTRS = [
 _STYLE_REF_ATTRS_TRAVERSE = [
     attr for attr in _STYLE_REF_ATTRS if attr != _clark("style", "next-style-name")
 ]
+
+# -- Html field -> ODF markup (see Py3oReport._get_html_text) -----------------
+_HTML_ODF_BLOCK_TAGS = ("p", "h1", "h2", "h3", "h4", "h5", "h6", "li")
+_HTML_ODF_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+_HTML_ODF_BOLD_TAGS = ("b", "strong")
+_HTML_ODF_ITALIC_TAGS = ("i", "em")
+_HTML_ODF_UNDERLINE_TAGS = ("u",)
+# Tags that, met while walking a non-block container, close whatever inline
+# text was accumulated so far and start a fresh block of their own.
+_HTML_ODF_FLUSH_TAGS = ("ul", "ol", "hr") + _HTML_ODF_BLOCK_TAGS
 
 
 class Py3oReport(models.TransientModel):
@@ -464,6 +476,210 @@ class Py3oReport(models.TransientModel):
                 result = label
         return result
 
+    def _get_html_text_escape(self, text):
+        """Escape XML special characters and collapse whitespace.
+
+        :param text: raw text extracted from an HTML text node
+        :return: text safe to place inside ODF ``text:p`` content
+        :rtype: str
+        """
+        collapsed = re.sub(r"\s+", " ", text)
+        collapsed = collapsed.replace("&", "&amp;")
+        collapsed = collapsed.replace("<", "&lt;")
+        collapsed = collapsed.replace(">", "&gt;")
+        return collapsed
+
+    def _get_html_text_style_flags(self, el):
+        """Detect Bold/Italic/Underline flags for one HTML element.
+
+        Combines the semantic tag (``b``/``strong``, ``i``/``em``,
+        ``u``) with the ``style`` attribute (``font-weight``,
+        ``font-style``, ``text-decoration``) so both sources are
+        honoured, matching the fix requested for this method.
+
+        :param el: ``lxml.html`` element being inspected
+        :return: three-tuple ``(bold, italic, underline)``
+        :rtype: tuple
+        """
+        tag = el.tag if isinstance(el.tag, str) else ""
+        bold = tag in _HTML_ODF_BOLD_TAGS
+        italic = tag in _HTML_ODF_ITALIC_TAGS
+        underline = tag in _HTML_ODF_UNDERLINE_TAGS
+        style = (el.get("style") or "").lower()
+        if not bold:
+            match = re.search(r"font-weight\s*:\s*([a-z0-9]+)", style)
+            if match:
+                value = match.group(1)
+                if value in ("bold", "bolder"):
+                    bold = True
+                elif value.isdigit() and int(value) >= 600:
+                    bold = True
+        if not italic and re.search(r"font-style\s*:\s*italic", style):
+            italic = True
+        if not underline and re.search(r"text-decoration\s*:\s*underline", style):
+            underline = True
+        return bold, italic, underline
+
+    def _get_html_text_run(self, text, bold, italic, underline):
+        """Wrap escaped text in nested ``text:span`` per active style.
+
+        :param text: already XML-escaped text
+        :param bold: whether the ``Bold`` style applies
+        :param italic: whether the ``Italic`` style applies
+        :param underline: whether the ``Underline`` style applies
+        :return: ``text`` wrapped in zero or more nested
+            ``text:span`` elements, never a new ``text:p``
+        :rtype: str
+        """
+        if not text:
+            return ""
+        result = text
+        if underline:
+            result = '<text:span text:style-name="Underline">%s</text:span>' % result
+        if italic:
+            result = '<text:span text:style-name="Italic">%s</text:span>' % result
+        if bold:
+            result = '<text:span text:style-name="Bold">%s</text:span>' % result
+        return result
+
+    def _get_html_text_inline(self, el, bold, italic, underline):
+        """Serialize one element's content as inline ODF markup.
+
+        Recurses into children, combining each element's own
+        Bold/Italic/Underline with the flags inherited from its
+        ancestors. A ``<br>`` becomes a single ``<text:line-break/>``;
+        a tag outside the supported set falls back to its plain
+        escaped text instead of raising.
+
+        :param el: ``lxml.html`` element whose content is serialized
+        :param bold: Bold flag inherited from ancestors
+        :param italic: Italic flag inherited from ancestors
+        :param underline: Underline flag inherited from ancestors
+        :return: inline ODF markup for ``el``'s text, children and
+            their tails
+        :rtype: str
+        """
+        own_bold, own_italic, own_underline = self._get_html_text_style_flags(el)
+        bold = bold or own_bold
+        italic = italic or own_italic
+        underline = underline or own_underline
+
+        parts = []
+        if el.text:
+            parts.append(
+                self._get_html_text_run(
+                    self._get_html_text_escape(el.text),
+                    bold,
+                    italic,
+                    underline,
+                )
+            )
+        for child in el:
+            if not isinstance(child.tag, str):
+                continue  # comment/processing instruction node
+            if child.tag == "br":
+                parts.append("<text:line-break/>")
+            else:
+                parts.append(self._get_html_text_inline(child, bold, italic, underline))
+            if child.tail:
+                parts.append(
+                    self._get_html_text_run(
+                        self._get_html_text_escape(child.tail),
+                        bold,
+                        italic,
+                        underline,
+                    )
+                )
+        return "".join(parts)
+
+    def _get_html_text_blocks(self, el, blocks):
+        """Collect one ODF block string per block-level HTML element.
+
+        ``p``/``h1``-``h6``/``li`` each become one entry of
+        ``blocks``; ``hr`` contributes an empty entry (rendered as a
+        blank separator line by the caller); ``ul``/``ol`` are
+        unwrapped so each ``li`` still becomes its own entry, prefixed
+        with a bullet (``ul``) or a number (``ol``). Bare text/inline
+        content with no wrapping block tag is kept in a single shared
+        entry.
+
+        :param el: ``lxml.html`` element being walked
+        :param blocks: list mutated in place, one string per block
+        :return: None
+        """
+        tag = el.tag if isinstance(el.tag, str) else ""
+        if tag in ("ul", "ol"):
+            index = 0
+            for child in el:
+                if not isinstance(child.tag, str):
+                    continue
+                if child.tag == "li":
+                    index += 1
+                    prefix = "%d. " % index if tag == "ol" else "• "
+                    indent = '<text:s text:c="3"/>'
+                    blocks.append(
+                        indent
+                        + prefix
+                        + self._get_html_text_inline(child, False, False, False)
+                    )
+                else:
+                    self._get_html_text_blocks(child, blocks)
+            return
+        if tag == "hr":
+            blocks.append("")
+            return
+        if tag in _HTML_ODF_BLOCK_TAGS:
+            heading = tag in _HTML_ODF_HEADING_TAGS
+            blocks.append(self._get_html_text_inline(el, heading, False, False))
+            return
+
+        inline_parts = []
+        if el.text:
+            inline_parts.append(self._get_html_text_escape(el.text))
+        for child in el:
+            if not isinstance(child.tag, str):
+                continue
+            if child.tag in _HTML_ODF_FLUSH_TAGS:
+                if inline_parts:
+                    blocks.append("".join(inline_parts))
+                    inline_parts = []
+                self._get_html_text_blocks(child, blocks)
+            elif child.tag == "br":
+                inline_parts.append("<text:line-break/>")
+            else:
+                inline_parts.append(
+                    self._get_html_text_inline(child, False, False, False)
+                )
+            if child.tail:
+                inline_parts.append(self._get_html_text_escape(child.tail))
+        if inline_parts:
+            blocks.append("".join(inline_parts))
+
+    @api.model
+    def _get_html_text(self, html_value):
+        """Convert an ``Html`` field value into ODF markup.
+
+        Meant to replace a ``text:input`` already nested inside an
+        existing ``<text:p>`` in a py3o ODT template (see the
+        ``get_html_text`` entry registered by ``_get_parser_context``) —
+        the result never opens a new ``<text:p>``. Supports ``p``,
+        ``br``, ``h1``-``h6``, ``ul``/``ol``/``li``, ``span``/``font``
+        and ``hr``; bold/italic/underline are detected from both the
+        semantic tag (``b``/``strong``, ``i``/``em``, ``u``) and the
+        ``style`` attribute. Tags outside that set fall back to plain
+        text instead of raising.
+
+        :param html_value: raw HTML string from an Odoo ``Html`` field
+        :return: markup safe to insert as-is in the ODT template
+        :rtype: genshi.core.Markup
+        """
+        if not html_value or not html_value.strip():
+            return Markup("")
+        root = html.fragment_fromstring(html_value, create_parent="div")
+        blocks = []
+        self._get_html_text_blocks(root, blocks)
+        return Markup("<text:line-break/><text:line-break/>".join(blocks))
+
     @api.model
     def load_from_file(self, path, key):
         """Load Parser class from a Python file in addons path"""
@@ -597,6 +813,7 @@ class Py3oReport(models.TransientModel):
         # EXTRA FUNCTIONS
         res["parameter_value"] = self._get_config_param
         res["selection_label"] = self._get_selection_label
+        res["get_html_text"] = self._get_html_text
 
         report = self.ir_actions_report_id
         if report.parser_state == "code":
