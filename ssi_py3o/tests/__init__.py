@@ -4,4 +4,5 @@
 
 from . import test_base_template
 from . import test_base_template_resolution
+from . import test_html_odf
 from . import test_odf_merge

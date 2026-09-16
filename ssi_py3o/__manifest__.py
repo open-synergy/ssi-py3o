@@ -12,6 +12,9 @@
     "depends": [
         "report_py3o",
     ],
+    "external_dependencies": {
+        "python": ["genshi"],
+    },
     "data": [
         "views/ir_actions_report.xml",
         "views/res_company.xml",
