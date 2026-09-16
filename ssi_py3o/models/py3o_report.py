@@ -81,7 +81,7 @@ _STYLE_REF_ATTRS_TRAVERSE = [
     attr for attr in _STYLE_REF_ATTRS if attr != _clark("style", "next-style-name")
 ]
 
-# -- Html field -> ODF markup (see Py3oReport._get_html_odf) -----------------
+# -- Html field -> ODF markup (see Py3oReport._get_html_text) -----------------
 _HTML_ODF_BLOCK_TAGS = ("p", "h1", "h2", "h3", "h4", "h5", "h6", "li")
 _HTML_ODF_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 _HTML_ODF_BOLD_TAGS = ("b", "strong")
@@ -476,7 +476,7 @@ class Py3oReport(models.TransientModel):
                 result = label
         return result
 
-    def _get_html_odf_escape(self, text):
+    def _get_html_text_escape(self, text):
         """Escape XML special characters and collapse whitespace.
 
         :param text: raw text extracted from an HTML text node
@@ -489,7 +489,7 @@ class Py3oReport(models.TransientModel):
         collapsed = collapsed.replace(">", "&gt;")
         return collapsed
 
-    def _get_html_odf_style_flags(self, el):
+    def _get_html_text_style_flags(self, el):
         """Detect Bold/Italic/Underline flags for one HTML element.
 
         Combines the semantic tag (``b``/``strong``, ``i``/``em``,
@@ -520,7 +520,7 @@ class Py3oReport(models.TransientModel):
             underline = True
         return bold, italic, underline
 
-    def _get_html_odf_run(self, text, bold, italic, underline):
+    def _get_html_text_run(self, text, bold, italic, underline):
         """Wrap escaped text in nested ``text:span`` per active style.
 
         :param text: already XML-escaped text
@@ -542,7 +542,7 @@ class Py3oReport(models.TransientModel):
             result = '<text:span text:style-name="Bold">%s</text:span>' % result
         return result
 
-    def _get_html_odf_inline(self, el, bold, italic, underline):
+    def _get_html_text_inline(self, el, bold, italic, underline):
         """Serialize one element's content as inline ODF markup.
 
         Recurses into children, combining each element's own
@@ -559,7 +559,7 @@ class Py3oReport(models.TransientModel):
             their tails
         :rtype: str
         """
-        own_bold, own_italic, own_underline = self._get_html_odf_style_flags(el)
+        own_bold, own_italic, own_underline = self._get_html_text_style_flags(el)
         bold = bold or own_bold
         italic = italic or own_italic
         underline = underline or own_underline
@@ -567,8 +567,8 @@ class Py3oReport(models.TransientModel):
         parts = []
         if el.text:
             parts.append(
-                self._get_html_odf_run(
-                    self._get_html_odf_escape(el.text),
+                self._get_html_text_run(
+                    self._get_html_text_escape(el.text),
                     bold,
                     italic,
                     underline,
@@ -580,11 +580,11 @@ class Py3oReport(models.TransientModel):
             if child.tag == "br":
                 parts.append("<text:line-break/>")
             else:
-                parts.append(self._get_html_odf_inline(child, bold, italic, underline))
+                parts.append(self._get_html_text_inline(child, bold, italic, underline))
             if child.tail:
                 parts.append(
-                    self._get_html_odf_run(
-                        self._get_html_odf_escape(child.tail),
+                    self._get_html_text_run(
+                        self._get_html_text_escape(child.tail),
                         bold,
                         italic,
                         underline,
@@ -592,7 +592,7 @@ class Py3oReport(models.TransientModel):
                 )
         return "".join(parts)
 
-    def _get_html_odf_blocks(self, el, blocks):
+    def _get_html_text_blocks(self, el, blocks):
         """Collect one ODF block string per block-level HTML element.
 
         ``p``/``h1``-``h6``/``li`` each become one entry of
@@ -620,22 +620,22 @@ class Py3oReport(models.TransientModel):
                     blocks.append(
                         indent
                         + prefix
-                        + self._get_html_odf_inline(child, False, False, False)
+                        + self._get_html_text_inline(child, False, False, False)
                     )
                 else:
-                    self._get_html_odf_blocks(child, blocks)
+                    self._get_html_text_blocks(child, blocks)
             return
         if tag == "hr":
             blocks.append("")
             return
         if tag in _HTML_ODF_BLOCK_TAGS:
             heading = tag in _HTML_ODF_HEADING_TAGS
-            blocks.append(self._get_html_odf_inline(el, heading, False, False))
+            blocks.append(self._get_html_text_inline(el, heading, False, False))
             return
 
         inline_parts = []
         if el.text:
-            inline_parts.append(self._get_html_odf_escape(el.text))
+            inline_parts.append(self._get_html_text_escape(el.text))
         for child in el:
             if not isinstance(child.tag, str):
                 continue
@@ -643,25 +643,25 @@ class Py3oReport(models.TransientModel):
                 if inline_parts:
                     blocks.append("".join(inline_parts))
                     inline_parts = []
-                self._get_html_odf_blocks(child, blocks)
+                self._get_html_text_blocks(child, blocks)
             elif child.tag == "br":
                 inline_parts.append("<text:line-break/>")
             else:
                 inline_parts.append(
-                    self._get_html_odf_inline(child, False, False, False)
+                    self._get_html_text_inline(child, False, False, False)
                 )
             if child.tail:
-                inline_parts.append(self._get_html_odf_escape(child.tail))
+                inline_parts.append(self._get_html_text_escape(child.tail))
         if inline_parts:
             blocks.append("".join(inline_parts))
 
     @api.model
-    def _get_html_odf(self, html_value):
+    def _get_html_text(self, html_value):
         """Convert an ``Html`` field value into ODF markup.
 
         Meant to replace a ``text:input`` already nested inside an
         existing ``<text:p>`` in a py3o ODT template (see the
-        ``html_odf`` entry registered by ``_get_parser_context``) —
+        ``get_html_text`` entry registered by ``_get_parser_context``) —
         the result never opens a new ``<text:p>``. Supports ``p``,
         ``br``, ``h1``-``h6``, ``ul``/``ol``/``li``, ``span``/``font``
         and ``hr``; bold/italic/underline are detected from both the
@@ -677,7 +677,7 @@ class Py3oReport(models.TransientModel):
             return Markup("")
         root = html.fragment_fromstring(html_value, create_parent="div")
         blocks = []
-        self._get_html_odf_blocks(root, blocks)
+        self._get_html_text_blocks(root, blocks)
         return Markup("<text:line-break/><text:line-break/>".join(blocks))
 
     @api.model
@@ -813,7 +813,7 @@ class Py3oReport(models.TransientModel):
         # EXTRA FUNCTIONS
         res["parameter_value"] = self._get_config_param
         res["selection_label"] = self._get_selection_label
-        res["html_odf"] = self._get_html_odf
+        res["get_html_text"] = self._get_html_text
 
         report = self.ir_actions_report_id
         if report.parser_state == "code":
