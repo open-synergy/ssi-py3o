@@ -18,7 +18,7 @@ from lxml import etree
 
 from odoo.tests import TransactionCase, tagged
 
-from .common import LOGO_PNG_BYTES, base_odt, report_odt
+from .common import LOGO_PNG_BYTES, base_odt, content_odt, report_odt
 
 NS = {
     "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
@@ -249,6 +249,139 @@ class TestOdfMerge(TransactionCase):
         self.assertIn("company", context)
         self.assertEqual(context["company"], self.env.company)
         self.assertEqual(context["company_partner"], self.env.company.partner_id)
+
+    # -- _py3o_ensure_html_table_style() ---------------------------------------
+    # Exercises the border style injected for _get_html_text_table()'s cells
+    # (see py3o_report.py). Uses content_odt(), not report_odt(): the latter's
+    # content.xml has no <office:automatic-styles> at all, so it cannot prove
+    # anything about a style added to that element.
+
+    def _content_of(self, odt_bytes):
+        """Parse ``odt_bytes``' ``content.xml`` into an lxml element."""
+        with ZipFile(BytesIO(odt_bytes)) as zf:
+            return etree.fromstring(zf.read("content.xml"))
+
+    def test_html_table_style_injected(self):
+        """Add the bordered ``OdooHtmlTableCell`` table-cell style.
+
+        Pure Python -- trigger P8 (L-01, L-19: this asserts the ODT
+        template's own ``content.xml`` bytes, a report-rendering
+        artifact no ``odoo-yaml-test`` action can produce or inspect).
+        """
+        result = self.engine._py3o_ensure_html_table_style(content_odt())
+        content_root = self._content_of(result)
+        auto_styles = content_root.find(_q("office", "automatic-styles"))
+        style = None
+        for child in auto_styles:
+            if child.get(_q("style", "name")) == "OdooHtmlTableCell":
+                style = child
+                break
+        self.assertIsNotNone(style)
+        self.assertEqual(style.get(_q("style", "family")), "table-cell")
+        props = style.find(_q("style", "table-cell-properties"))
+        self.assertIsNotNone(props)
+        for side in ("top", "bottom", "left", "right"):
+            self.assertTrue(props.get(_q("fo", "border-%s" % side)))
+
+    def test_html_table_style_idempotent(self):
+        """Leave an already-present same-named style untouched.
+
+        Pre-seeds a style of the same name, distinguishable from what
+        the method itself would generate (no ``fo:border``), to prove
+        a second call leaves an already-present style untouched
+        rather than duplicating or overwriting it.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        preseeded = (
+            '<style:style xmlns:style="urn:oasis:names:tc:opendocument:'
+            'xmlns:style:1.0" style:name="OdooHtmlTableCell" '
+            'style:family="table-cell"/>'
+        )
+        source = content_odt(auto_styles_inner=preseeded)
+        result = self.engine._py3o_ensure_html_table_style(source)
+        content_root = self._content_of(result)
+        auto_styles = content_root.find(_q("office", "automatic-styles"))
+        matches = [
+            c for c in auto_styles if c.get(_q("style", "name")) == "OdooHtmlTableCell"
+        ]
+        self.assertEqual(len(matches), 1)
+        self.assertIsNone(matches[0].find(_q("style", "table-cell-properties")))
+
+    def test_html_table_style_fails_open_on_corrupt_input(self):
+        """Return the input bytes unchanged when it is not a valid ODT.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_table_style(b"not a zip")
+        self.assertEqual(result, b"not a zip")
+
+    # -- _py3o_ensure_html_text_styles() ---------------------------------------
+    # Exercises the heading-size and color styles used by _get_html_text_run()
+    # (see py3o_report.py). Same content_odt() fixture as the table-cell style
+    # tests above, for the same reason (report_odt()'s content.xml has no
+    # <office:automatic-styles> to prove anything against).
+
+    def test_text_styles_injected(self):
+        """Add all 6 heading styles and all 16 color styles.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_text_styles(content_odt())
+        content_root = self._content_of(result)
+        auto_styles = content_root.find(_q("office", "automatic-styles"))
+        names = {c.get(_q("style", "name")) for c in auto_styles}
+        for expected in ("OdooH1", "OdooH2", "OdooH3", "OdooH4", "OdooH5", "OdooH6"):
+            self.assertIn(expected, names)
+        self.assertIn("OdooColor_ff0000", names)  # red
+        self.assertIn("OdooColor_0000ff", names)  # blue
+        h1 = next(c for c in auto_styles if c.get(_q("style", "name")) == "OdooH1")
+        h1_props = h1.find(_q("style", "text-properties"))
+        self.assertEqual(h1_props.get(_q("fo", "font-size")), "24pt")
+        red = next(
+            c for c in auto_styles if c.get(_q("style", "name")) == "OdooColor_ff0000"
+        )
+        red_props = red.find(_q("style", "text-properties"))
+        self.assertEqual(red_props.get(_q("fo", "color")), "#ff0000")
+
+    def test_text_styles_idempotent(self):
+        """Leave an already-present same-named style untouched.
+
+        Mirrors ``test_html_table_style_idempotent``: pre-seeds
+        ``OdooH1`` distinguishably (no ``fo:font-size``) to prove a
+        second call does not duplicate or overwrite it, while still
+        adding the other 21 styles that were genuinely missing.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        preseeded = (
+            '<style:style xmlns:style="urn:oasis:names:tc:opendocument:'
+            'xmlns:style:1.0" style:name="OdooH1" style:family="text"/>'
+        )
+        source = content_odt(auto_styles_inner=preseeded)
+        result = self.engine._py3o_ensure_html_text_styles(source)
+        content_root = self._content_of(result)
+        auto_styles = content_root.find(_q("office", "automatic-styles"))
+        matches = [c for c in auto_styles if c.get(_q("style", "name")) == "OdooH1"]
+        self.assertEqual(len(matches), 1)
+        self.assertIsNone(matches[0].find(_q("style", "text-properties")))
+        # the other 21 styles were still added around the pre-seeded one
+        names = {c.get(_q("style", "name")) for c in auto_styles}
+        self.assertIn("OdooH2", names)
+        self.assertIn("OdooColor_ff0000", names)
+
+    def test_text_styles_fail_open_on_corrupt_input(self):
+        """Return the input bytes unchanged when it is not a valid ODT.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_text_styles(b"not a zip")
+        self.assertEqual(result, b"not a zip")
 
     # -- helpers --------------------------------------------------------------
 

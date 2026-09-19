@@ -22,11 +22,13 @@ _CONTENT_XML = (
 )
 
 
-def _build_odt(styles_xml, extra_files=None):
+def _build_odt(styles_xml, extra_files=None, content_xml=None):
     """Zip up a minimal but structurally valid .odt package.
 
     `extra_files` is a mapping of {full_path: bytes} added to the zip and
     declared in META-INF/manifest.xml (used for Pictures/*.png fixtures).
+    `content_xml` overrides the fixed `_CONTENT_XML` body (used by
+    `content_odt()` to exercise `<office:automatic-styles>`).
     """
     manifest_entries = [
         '<manifest:file-entry manifest:full-path="/" manifest:version="1.2" '
@@ -36,7 +38,10 @@ def _build_odt(styles_xml, extra_files=None):
         '<manifest:file-entry manifest:full-path="styles.xml" '
         'manifest:media-type="text/xml"/>',
     ]
-    files = {"content.xml": _CONTENT_XML, "styles.xml": styles_xml.encode("utf-8")}
+    files = {
+        "content.xml": content_xml if content_xml is not None else _CONTENT_XML,
+        "styles.xml": styles_xml.encode("utf-8"),
+    }
     for path, data in (extra_files or {}).items():
         manifest_entries.append(
             '<manifest:file-entry manifest:full-path="%s" '
@@ -173,3 +178,31 @@ def base_odt():
 
 def report_odt(extra_files=None):
     return _build_odt(REPORT_STYLES_XML, extra_files=extra_files)
+
+
+_CONTENT_XML_NSMAP = (
+    'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+    'xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" '
+    'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" '
+    'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" '
+    'xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"'
+)
+
+
+def content_odt(auto_styles_inner=""):
+    """Build an .odt whose content.xml has a real <office:automatic-styles>.
+
+    `_CONTENT_XML` (used by `report_odt()`) has no automatic-styles
+    element at all, so it cannot exercise
+    `_py3o_ensure_html_table_style()`. `auto_styles_inner` is raw XML
+    placed inside that element (used to pre-seed a same-named style
+    for the idempotency test).
+    """
+    content_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<office:document-content %s>"
+        "<office:automatic-styles>%s</office:automatic-styles>"
+        "<office:body><office:text/></office:body>"
+        "</office:document-content>"
+    ) % (_CONTENT_XML_NSMAP, auto_styles_inner)
+    return _build_odt(REPORT_STYLES_XML, content_xml=content_xml.encode("utf-8"))
