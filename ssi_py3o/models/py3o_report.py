@@ -7,6 +7,7 @@ import mimetypes
 import os
 import re
 import sys
+import uuid
 from copy import deepcopy
 from inspect import isfunction
 from io import BytesIO
@@ -89,7 +90,66 @@ _HTML_ODF_ITALIC_TAGS = ("i", "em")
 _HTML_ODF_UNDERLINE_TAGS = ("u",)
 # Tags that, met while walking a non-block container, close whatever inline
 # text was accumulated so far and start a fresh block of their own.
-_HTML_ODF_FLUSH_TAGS = ("ul", "ol", "hr") + _HTML_ODF_BLOCK_TAGS
+_HTML_ODF_FLUSH_TAGS = ("ul", "ol", "hr", "table") + _HTML_ODF_BLOCK_TAGS
+
+# Strips ODF markup so a rendered block's *visible* text can be checked for
+# blankness (see _get_html_text_blocks' skip-blank-paragraph handling).
+_ODF_TAG_RE = re.compile(r"<[^>]+>")
+
+# table-cell automatic style injected by _py3o_ensure_html_table_style() so
+# _get_html_text_table()'s cells render with a visible border -- see that
+# method's docstring for why it cannot simply be a style already present in
+# the source template.
+_HTML_TABLE_CELL_STYLE_NAME = "OdooHtmlTableCell"
+
+# text (character) automatic styles injected by _py3o_ensure_html_text_styles()
+# for <h1>-<h6> font sizes -- same constraint as the table-cell style above,
+# see that method's docstring. All headings are bold, decreasing in size.
+_HTML_HEADING_STYLE_NAMES = {
+    "h1": "OdooH1",
+    "h2": "OdooH2",
+    "h3": "OdooH3",
+    "h4": "OdooH4",
+    "h5": "OdooH5",
+    "h6": "OdooH6",
+}
+_HTML_HEADING_FONT_SIZES = {
+    "h1": "24pt",
+    "h2": "20pt",
+    "h3": "17pt",
+    "h4": "14pt",
+    "h5": "12pt",
+    "h6": "10pt",
+}
+
+# The 16 standard CSS2/HTML4 keyword colors -- the FIXED, pre-registered set
+# _get_html_text_color_style() can resolve `style="color: ..."` (or
+# `<font color="...">`) against. ODF text runs can only reference an
+# already-declared style (see _py3o_ensure_html_text_styles()), so this list
+# is deliberately bounded rather than attempting to support arbitrary colors;
+# an unlisted color (a custom hex not equal to one of these) renders without
+# color instead of raising -- same "documented limitation, not a crash"
+# posture as colspan/rowspan in _get_html_text_table().
+_HTML_COLOR_KEYWORDS = {
+    "black": "000000",
+    "silver": "c0c0c0",
+    "gray": "808080",
+    "grey": "808080",
+    "white": "ffffff",
+    "maroon": "800000",
+    "red": "ff0000",
+    "purple": "800080",
+    "fuchsia": "ff00ff",
+    "green": "008000",
+    "lime": "00ff00",
+    "olive": "808000",
+    "yellow": "ffff00",
+    "navy": "000080",
+    "blue": "0000ff",
+    "teal": "008080",
+    "aqua": "00ffff",
+}
+_HTML_KNOWN_COLOR_HEXES = sorted(set(_HTML_COLOR_KEYWORDS.values()))
 
 
 class Py3oReport(models.TransientModel):
@@ -105,6 +165,8 @@ class Py3oReport(models.TransientModel):
 
     def get_template(self, model_instance):
         report_bytes = super().get_template(model_instance)
+        report_bytes = self._py3o_ensure_html_table_style(report_bytes)
+        report_bytes = self._py3o_ensure_html_text_styles(report_bytes)
         report = self.ir_actions_report_id
         base_bytes = report._py3o_get_base_template_data()
         if not base_bytes:
@@ -490,15 +552,19 @@ class Py3oReport(models.TransientModel):
         return collapsed
 
     def _get_html_text_style_flags(self, el):
-        """Detect Bold/Italic/Underline flags for one HTML element.
+        """Detect Bold/Italic/Underline/color flags for one HTML element.
 
         Combines the semantic tag (``b``/``strong``, ``i``/``em``,
         ``u``) with the ``style`` attribute (``font-weight``,
-        ``font-style``, ``text-decoration``) so both sources are
-        honoured, matching the fix requested for this method.
+        ``font-style``, ``text-decoration``, ``color``) so both
+        sources are honoured, matching the fix requested for this
+        method. Color also recognizes the legacy ``<font color="...">``
+        attribute.
 
         :param el: ``lxml.html`` element being inspected
-        :return: three-tuple ``(bold, italic, underline)``
+        :return: four-tuple ``(bold, italic, underline, color_style)``,
+            ``color_style`` a pre-registered style name (see
+            ``_get_html_text_color_style``) or ``None``
         :rtype: tuple
         """
         tag = el.tag if isinstance(el.tag, str) else ""
@@ -518,15 +584,66 @@ class Py3oReport(models.TransientModel):
             italic = True
         if not underline and re.search(r"text-decoration\s*:\s*underline", style):
             underline = True
-        return bold, italic, underline
+        color_style = self._get_html_text_color_style(el, style)
+        return bold, italic, underline, color_style
 
-    def _get_html_text_run(self, text, bold, italic, underline):
+    def _get_html_text_color_style(self, el, lowercase_style):
+        """Resolve ``el``'s own text color to a pre-registered style name.
+
+        Reads ``style="color: ..."`` first, falling back to the
+        legacy ``<font color="...">`` attribute. Only a color equal to
+        one of the 16 standard keywords in ``_HTML_COLOR_KEYWORDS``
+        (by name or exact hex equivalent) resolves to a style name --
+        see ``_py3o_ensure_html_text_styles`` for why the set is
+        bounded. Anything else (an unrecognized name, an arbitrary
+        hex) returns ``None`` rather than raising.
+
+        :param el: ``lxml.html`` element being inspected
+        :param lowercase_style: ``el``'s ``style`` attribute, already
+            lowercased by the caller (``_get_html_text_style_flags``)
+        :return: ``"OdooColor_<hex>"`` or ``None``
+        :rtype: str or None
+        """
+        raw = None
+        match = re.search(r"color\s*:\s*([^;]+)", lowercase_style)
+        if match:
+            raw = match.group(1).strip()
+        elif el.tag == "font" and el.get("color"):
+            raw = el.get("color").strip().lower()
+        if not raw:
+            return None
+        hex_value = _HTML_COLOR_KEYWORDS.get(raw)
+        if hex_value is None:
+            hex_match = re.match(r"^#?([0-9a-f]{3}|[0-9a-f]{6})$", raw)
+            if hex_match:
+                digits = hex_match.group(1)
+                if len(digits) == 3:
+                    digits = "".join(c * 2 for c in digits)
+                if digits in _HTML_KNOWN_COLOR_HEXES:
+                    hex_value = digits
+        if hex_value is None:
+            return None
+        return "OdooColor_%s" % hex_value
+
+    def _get_html_text_run(
+        self, text, bold, italic, underline, color_style=None, heading_style=None
+    ):
         """Wrap escaped text in nested ``text:span`` per active style.
+
+        Nesting order (innermost first): Underline, Italic, Bold,
+        color, heading -- heading outermost since it is a block-level
+        property of the whole paragraph, not a per-run one like the
+        others.
 
         :param text: already XML-escaped text
         :param bold: whether the ``Bold`` style applies
         :param italic: whether the ``Italic`` style applies
         :param underline: whether the ``Underline`` style applies
+        :param color_style: pre-registered color style name to apply,
+            or ``None`` (see ``_get_html_text_color_style``)
+        :param heading_style: pre-registered heading style name
+            (``OdooH1``-``OdooH6``) inherited from the enclosing
+            block, or ``None`` outside a heading
         :return: ``text`` wrapped in zero or more nested
             ``text:span`` elements, never a new ``text:p``
         :rtype: str
@@ -540,29 +657,53 @@ class Py3oReport(models.TransientModel):
             result = '<text:span text:style-name="Italic">%s</text:span>' % result
         if bold:
             result = '<text:span text:style-name="Bold">%s</text:span>' % result
+        if color_style:
+            result = '<text:span text:style-name="%s">%s</text:span>' % (
+                color_style,
+                result,
+            )
+        if heading_style:
+            result = '<text:span text:style-name="%s">%s</text:span>' % (
+                heading_style,
+                result,
+            )
         return result
 
-    def _get_html_text_inline(self, el, bold, italic, underline):
+    def _get_html_text_inline(
+        self, el, bold, italic, underline, color_style=None, heading_style=None
+    ):
         """Serialize one element's content as inline ODF markup.
 
         Recurses into children, combining each element's own
-        Bold/Italic/Underline with the flags inherited from its
-        ancestors. A ``<br>`` becomes a single ``<text:line-break/>``;
-        a tag outside the supported set falls back to its plain
-        escaped text instead of raising.
+        Bold/Italic/Underline/color with the flags inherited from its
+        ancestors -- a nested element's own color overrides an
+        ancestor's, matching CSS cascade. A ``<br>`` becomes a single
+        ``<text:line-break/>``; a tag outside the supported set falls
+        back to its plain escaped text instead of raising.
 
         :param el: ``lxml.html`` element whose content is serialized
         :param bold: Bold flag inherited from ancestors
         :param italic: Italic flag inherited from ancestors
         :param underline: Underline flag inherited from ancestors
+        :param color_style: color style name inherited from ancestors,
+            or ``None``
+        :param heading_style: heading style name from the enclosing
+            block (constant through the whole recursion, never
+            re-derived per element), or ``None``
         :return: inline ODF markup for ``el``'s text, children and
             their tails
         :rtype: str
         """
-        own_bold, own_italic, own_underline = self._get_html_text_style_flags(el)
+        (
+            own_bold,
+            own_italic,
+            own_underline,
+            own_color,
+        ) = self._get_html_text_style_flags(el)
         bold = bold or own_bold
         italic = italic or own_italic
         underline = underline or own_underline
+        color_style = own_color or color_style
 
         parts = []
         if el.text:
@@ -572,6 +713,8 @@ class Py3oReport(models.TransientModel):
                     bold,
                     italic,
                     underline,
+                    color_style,
+                    heading_style,
                 )
             )
         for child in el:
@@ -580,7 +723,11 @@ class Py3oReport(models.TransientModel):
             if child.tag == "br":
                 parts.append("<text:line-break/>")
             else:
-                parts.append(self._get_html_text_inline(child, bold, italic, underline))
+                parts.append(
+                    self._get_html_text_inline(
+                        child, bold, italic, underline, color_style, heading_style
+                    )
+                )
             if child.tail:
                 parts.append(
                     self._get_html_text_run(
@@ -588,9 +735,280 @@ class Py3oReport(models.TransientModel):
                         bold,
                         italic,
                         underline,
+                        color_style,
+                        heading_style,
                     )
                 )
         return "".join(parts)
+
+    def _py3o_ensure_html_table_style(self, report_bytes):
+        """Inject the bordered ``table-cell`` style used by HTML tables.
+
+        ``_get_html_text_table`` references
+        ``table:style-name="OdooHtmlTableCell"`` on every cell it
+        emits, but that style cannot already exist in the source ODT
+        template -- the table itself is only built at render time, so
+        no template author could have created a matching
+        ``style:style`` for it. This adds that one style to the
+        report's ``content.xml`` ``<office:automatic-styles>`` before
+        py3o ever sees the template, using the same "rewrite the ODT
+        zip in memory" technique already used by
+        ``_py3o_merge_base_template`` for the letterhead. Idempotent:
+        a report whose ``content.xml`` already defines a style of that
+        name (e.g. a second call for the same template) is left
+        untouched.
+
+        Failure is non-fatal: any malformed/unreadable template is
+        returned unchanged rather than raising here, since a missing
+        border is far less disruptive than an unprintable report --
+        ``_get_html_text_table``'s cells simply render without a
+        visible border in that case (same as before this method
+        existed).
+
+        :param report_bytes: raw ODT template bytes, before py3o's
+            own base-template (letterhead) merge and rendering
+        :return: ``report_bytes``, with the style added to
+            ``content.xml``
+        :rtype: bytes
+        """
+        try:
+            report_zip_in = ZipFile(BytesIO(report_bytes))
+            content_root = etree.fromstring(report_zip_in.read("content.xml"))
+        except (BadZipFile, KeyError, etree.XMLSyntaxError):
+            return report_bytes
+
+        auto_styles = content_root.find(_clark("office", "automatic-styles"))
+        if auto_styles is None:
+            return report_bytes
+        if (
+            self._find_style_by_name(auto_styles, _HTML_TABLE_CELL_STYLE_NAME)
+            is not None
+        ):
+            return report_bytes
+
+        style = etree.SubElement(auto_styles, _clark("style", "style"))
+        style.set(_clark("style", "name"), _HTML_TABLE_CELL_STYLE_NAME)
+        style.set(_clark("style", "family"), "table-cell")
+        props = etree.SubElement(style, _clark("style", "table-cell-properties"))
+        # Explicit per-side longhand, not the fo:border shorthand: some ODF
+        # consumers render the shorthand inconsistently on table cells, and
+        # the source HTML this method exists to approximate already uses the
+        # same per-side form (border-top/-bottom/-left/-right).
+        for side in ("top", "bottom", "left", "right"):
+            props.set(_clark("fo", "border-%s" % side), "1pt solid #000000")
+        props.set(_clark("fo", "padding"), "0.05in")
+
+        new_zip_entries = {
+            "content.xml": etree.tostring(
+                content_root, xml_declaration=True, encoding="UTF-8"
+            )
+        }
+        return self._py3o_write_merged_zip(report_zip_in, new_zip_entries)
+
+    def _py3o_ensure_html_text_styles(self, report_bytes):
+        """Inject the heading-size and text-color styles ``get_html_text`` uses.
+
+        Same constraint and technique as
+        ``_py3o_ensure_html_table_style`` (see its docstring): neither
+        an ``<h1>``-``<h6>`` font-size style nor a ``style="color:
+        ..."`` color style can already exist in the source template,
+        so both are added to ``content.xml``'s
+        ``<office:automatic-styles>`` here, before py3o ever sees the
+        template. Idempotent per style (a style already present by
+        name is left untouched); unlike the table-cell style this
+        injects up to 22 styles (6 headings + 16 colors) in one pass,
+        skipping only individual names that already exist.
+
+        Colors are deliberately bounded to the 16 standard CSS2
+        keywords in ``_HTML_COLOR_KEYWORDS`` -- see
+        ``_get_html_text_color_style`` for why an arbitrary/unlisted
+        color cannot be supported this way.
+
+        Failure is non-fatal, same reasoning as the table-cell style:
+        a malformed/unreadable template is returned unchanged rather
+        than raising, since missing heading sizes/colors are far less
+        disruptive than an unprintable report.
+
+        :param report_bytes: raw ODT template bytes, before py3o's
+            own base-template (letterhead) merge and rendering
+        :return: ``report_bytes``, with the styles added to
+            ``content.xml``
+        :rtype: bytes
+        """
+        try:
+            report_zip_in = ZipFile(BytesIO(report_bytes))
+            content_root = etree.fromstring(report_zip_in.read("content.xml"))
+        except (BadZipFile, KeyError, etree.XMLSyntaxError):
+            return report_bytes
+
+        auto_styles = content_root.find(_clark("office", "automatic-styles"))
+        if auto_styles is None:
+            return report_bytes
+
+        changed = False
+        for tag, style_name in _HTML_HEADING_STYLE_NAMES.items():
+            if self._find_style_by_name(auto_styles, style_name) is not None:
+                continue
+            style = etree.SubElement(auto_styles, _clark("style", "style"))
+            style.set(_clark("style", "name"), style_name)
+            style.set(_clark("style", "family"), "text")
+            props = etree.SubElement(style, _clark("style", "text-properties"))
+            props.set(_clark("fo", "font-size"), _HTML_HEADING_FONT_SIZES[tag])
+            props.set(_clark("fo", "font-weight"), "bold")
+            changed = True
+
+        for hex_value in _HTML_KNOWN_COLOR_HEXES:
+            style_name = "OdooColor_%s" % hex_value
+            if self._find_style_by_name(auto_styles, style_name) is not None:
+                continue
+            style = etree.SubElement(auto_styles, _clark("style", "style"))
+            style.set(_clark("style", "name"), style_name)
+            style.set(_clark("style", "family"), "text")
+            props = etree.SubElement(style, _clark("style", "text-properties"))
+            props.set(_clark("fo", "color"), "#%s" % hex_value)
+            changed = True
+
+        if not changed:
+            return report_bytes
+
+        new_zip_entries = {
+            "content.xml": etree.tostring(
+                content_root, xml_declaration=True, encoding="UTF-8"
+            )
+        }
+        return self._py3o_write_merged_zip(report_zip_in, new_zip_entries)
+
+    def _get_html_text_table(self, el):
+        """Render an HTML ``<table>`` as a real, nested ODF table.
+
+        Every ``get_html_text`` call substitutes the content of one
+        already-existing ``<text:p>`` in the ODT template (see
+        ``_get_html_text``), and ODF forbids a ``table:table`` inside
+        a ``text:p`` -- so a table cannot simply be inserted at that
+        point. Worse, py3o.template does not insert our return value
+        directly inside that ``<text:p>``: it wraps it in an extra
+        ``<text:span>`` of its own (``py3o/template/main.py``,
+        ``_TemplateHelper.__handle_link``, the ``instruction ==
+        "content"`` branch) to preserve the placeholder's character
+        style -- confirmed by rendering this exact template through
+        the real pipeline and diffing the produced ``content.xml``
+        against the source. So this closes that ``<text:span>`` *and*
+        its ``<text:p>``, emits a genuine ``<table:table>``, then
+        reopens an (unstyled) ``<text:span>`` inside an (unstyled)
+        ``<text:p>`` for whatever follows -- relying on py3o's own
+        ``</text:span>`` and the template's own ``</text:p>``, both
+        already emitted right after the substitution point, to close
+        that reopened pair. This is safe wherever the substitution's
+        ``<text:p>`` sits inside a container that also allows
+        ``table:table`` as a child, which every container these
+        templates actually use it in does (``table:table-cell``, list
+        items, sections, headers/footers, body text -- ODF 1.2
+        §5.1.2); verified empirically end-to-end through the real
+        py3o + LibreOffice 6.1 pipeline, not just a hand-built ODT.
+
+        Cells reference the ``OdooHtmlTableCell`` style (1pt border +
+        padding) for a visible grid -- see
+        ``_py3o_ensure_html_table_style``, which injects that style
+        into the template at render time since no source template
+        could define it up front. Column widths are not set, so
+        columns render evenly spaced. Each ``<tr>`` (found at any depth,
+        so ``<thead>``/``<tbody>`` wrapping is transparent) becomes
+        one ``table:table-row``; its ``<td>``/``<th>`` cells each
+        become one ``table:table-cell`` holding a single ``text:p``
+        (``<th>`` rendered Bold). A direct ``<thead>`` child's rows are
+        wrapped in ``<table:table-header-rows>``, so a LibreOffice/ODF
+        renderer repeats them on every page a long table spans --
+        without this, each page fragment of a table that spans a page
+        break would show only its own top/bottom cell borders with no
+        header, reading as two disconnected tables rather than one
+        continuing table. ``colspan``/``rowspan`` are not supported:
+        each cell occupies exactly one column, extra ``<p>`` beyond
+        the first in one cell are flattened onto that cell's single
+        line, and a nested ``<table>`` inside a cell has its rows
+        flattened into this table's own row list.
+
+        :param el: ``<table>`` element being serialized
+        :return: ``</text:span></text:p>``, the table, and a reopened
+            ``<text:p><text:span>`` ready for py3o's own
+            ``</text:span>`` and the template's own ``</text:p>``, or
+            ``""`` if the table has no rows
+        :rtype: str
+        """
+        thead = el.find("thead")
+        header_trs = set(thead.iter("tr")) if thead is not None else set()
+
+        rows = []
+        max_cols = 0
+        for row in el.iter("tr"):
+            cells = [
+                child
+                for child in row
+                if isinstance(child.tag, str) and child.tag in ("td", "th")
+            ]
+            if not cells:
+                continue
+            rows.append((row in header_trs, cells))
+            max_cols = max(max_cols, len(cells))
+        if not rows:
+            return ""
+
+        def _row_xml(cells):
+            """Render one ``<tr>``'s ``cells`` as a ``table:table-row``."""
+            row_parts = ["<table:table-row>"]
+            for cell in cells:
+                text = self._get_html_text_inline(cell, cell.tag == "th", False, False)
+                row_parts.append(
+                    '<table:table-cell table:style-name="%s" '
+                    'office:value-type="string">'
+                    "<text:p>%s</text:p></table:table-cell>"
+                    % (_HTML_TABLE_CELL_STYLE_NAME, text)
+                )
+            row_parts.append("</table:table-row>")
+            return "".join(row_parts)
+
+        parts = ['<table:table table:name="HtmlTable_%s">' % uuid.uuid4().hex[:12]]
+        parts.append("<table:table-column/>" * max_cols)
+        # <thead> rows are always contiguous at the start in standard HTML,
+        # so a single header block (not interleaved per-row) is enough.
+        if header_trs:
+            parts.append("<table:table-header-rows>")
+            parts.extend(_row_xml(cells) for is_header, cells in rows if is_header)
+            parts.append("</table:table-header-rows>")
+        parts.extend(_row_xml(cells) for is_header, cells in rows if not is_header)
+        parts.append("</table:table>")
+        return "</text:span></text:p>%s<text:p><text:span>" % "".join(parts)
+
+    def _get_html_text_list(self, tag, el, blocks):
+        """Render one ``<ul>``/``<ol>``'s ``<li>`` children as blocks.
+
+        Split out of ``_get_html_text_blocks`` (see its docstring)
+        purely to keep that method's branching under the repo's
+        flake8 ``max-complexity``; behaviour is unchanged. Each
+        ``<li>`` becomes its own entry of ``blocks``, prefixed with a
+        bullet (``ul``) or a number (``ol``); a non-``<li>`` child
+        (e.g. a nested ``<ul>``) is walked back through
+        ``_get_html_text_blocks`` instead.
+
+        :param tag: ``"ul"`` or ``"ol"``, the list's own tag
+        :param el: the ``<ul>``/``<ol>`` element being walked
+        :param blocks: list mutated in place, one string per block
+        :return: None
+        """
+        index = 0
+        for child in el:
+            if not isinstance(child.tag, str):
+                continue
+            if child.tag == "li":
+                index += 1
+                prefix = "%d. " % index if tag == "ol" else "• "
+                indent = '<text:s text:c="3"/>'
+                blocks.append(
+                    indent
+                    + prefix
+                    + self._get_html_text_inline(child, False, False, False)
+                )
+            else:
+                self._get_html_text_blocks(child, blocks)
 
     def _get_html_text_blocks(self, el, blocks):
         """Collect one ODF block string per block-level HTML element.
@@ -599,9 +1017,23 @@ class Py3oReport(models.TransientModel):
         ``blocks``; ``hr`` contributes an empty entry (rendered as a
         blank separator line by the caller); ``ul``/``ol`` are
         unwrapped so each ``li`` still becomes its own entry, prefixed
-        with a bullet (``ul``) or a number (``ol``). Bare text/inline
-        content with no wrapping block tag is kept in a single shared
-        entry.
+        with a bullet (``ul``) or a number (``ol``); ``table`` becomes
+        one entry rendered by ``_get_html_text_table``. Bare
+        text/inline content with no wrapping block tag is kept in a
+        single shared entry.
+
+        A ``p``/heading with no visible text and no ``<br>`` (e.g. a
+        stray whitespace-only paragraph left over from pasting into
+        the Odoo Html editor) contributes **no** entry at all, rather
+        than an empty one: since every entry is later joined with a
+        line break (see ``_get_html_text``), an empty entry would
+        still add a blank line the source never visually showed (the
+        browser collapses it to ~0 height). A paragraph containing
+        *only* ``<br>`` -- how the Html editor encodes a deliberate
+        blank line -- keeps its slot as an empty entry (so joining
+        still adds the one extra break that blank line calls for) but
+        drops the ``<text:line-break/>`` marker itself, which would
+        otherwise double that break.
 
         :param el: ``lxml.html`` element being walked
         :param blocks: list mutated in place, one string per block
@@ -609,28 +1041,28 @@ class Py3oReport(models.TransientModel):
         """
         tag = el.tag if isinstance(el.tag, str) else ""
         if tag in ("ul", "ol"):
-            index = 0
-            for child in el:
-                if not isinstance(child.tag, str):
-                    continue
-                if child.tag == "li":
-                    index += 1
-                    prefix = "%d. " % index if tag == "ol" else "• "
-                    indent = '<text:s text:c="3"/>'
-                    blocks.append(
-                        indent
-                        + prefix
-                        + self._get_html_text_inline(child, False, False, False)
-                    )
-                else:
-                    self._get_html_text_blocks(child, blocks)
+            self._get_html_text_list(tag, el, blocks)
             return
         if tag == "hr":
             blocks.append("")
             return
+        if tag == "table":
+            blocks.append(self._get_html_text_table(el))
+            return
         if tag in _HTML_ODF_BLOCK_TAGS:
-            heading = tag in _HTML_ODF_HEADING_TAGS
-            blocks.append(self._get_html_text_inline(el, heading, False, False))
+            heading_style = _HTML_HEADING_STYLE_NAMES.get(tag)
+            content = self._get_html_text_inline(
+                el, False, False, False, heading_style=heading_style
+            )
+            if content == "<text:line-break/>":
+                # A paragraph that is *only* a <br> -- the Html editor's
+                # way of encoding a deliberate blank line. Keep the slot
+                # (so joining below still adds one extra line break) but
+                # drop the marker itself, which would otherwise double
+                # that break.
+                blocks.append("")
+            elif _ODF_TAG_RE.sub("", content).strip():
+                blocks.append(content)
             return
 
         inline_parts = []
@@ -661,13 +1093,26 @@ class Py3oReport(models.TransientModel):
 
         Meant to replace a ``text:input`` already nested inside an
         existing ``<text:p>`` in a py3o ODT template (see the
-        ``get_html_text`` entry registered by ``_get_parser_context``) —
-        the result never opens a new ``<text:p>``. Supports ``p``,
-        ``br``, ``h1``-``h6``, ``ul``/``ol``/``li``, ``span``/``font``
-        and ``hr``; bold/italic/underline are detected from both the
-        semantic tag (``b``/``strong``, ``i``/``em``, ``u``) and the
-        ``style`` attribute. Tags outside that set fall back to plain
-        text instead of raising.
+        ``get_html_text`` entry registered by ``_get_parser_context``).
+        Supports ``p``, ``br``, ``h1``-``h6``, ``ul``/``ol``/``li``,
+        ``span``/``font``, ``hr`` and ``table``; bold/italic/underline
+        are detected from both the semantic tag (``b``/``strong``,
+        ``i``/``em``, ``u``) and the ``style`` attribute. Tags outside
+        that set fall back to plain text instead of raising.
+
+        Every construct except ``table`` stays entirely inside that
+        one ``<text:p>`` (never opens a new one). ``table`` is the
+        one exception: it closes that paragraph, emits a real
+        ``<table:table>``, and reopens an empty paragraph for
+        whatever follows -- see ``_get_html_text_table`` for why that
+        is safe here.
+
+        Blocks are joined by a single ``<text:line-break/>`` -- one
+        new line per source paragraph, matching normal paragraph
+        flow. A deliberate blank line between two paragraphs is
+        therefore carried entirely by the source's own ``<p><br></p>``
+        (rendered as its own block, see ``_get_html_text_blocks``),
+        not added again here.
 
         :param html_value: raw HTML string from an Odoo ``Html`` field
         :return: markup safe to insert as-is in the ODT template
@@ -678,7 +1123,7 @@ class Py3oReport(models.TransientModel):
         root = html.fragment_fromstring(html_value, create_parent="div")
         blocks = []
         self._get_html_text_blocks(root, blocks)
-        return Markup("<text:line-break/><text:line-break/>".join(blocks))
+        return Markup("<text:line-break/>".join(blocks))
 
     @api.model
     def load_from_file(self, path, key):
