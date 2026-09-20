@@ -283,6 +283,82 @@ class TestOdfMerge(TransactionCase):
         for side in ("top", "bottom", "left", "right"):
             self.assertTrue(props.get(_q("fo", "border-%s" % side)))
 
+    def test_html_list_item_style_injected(self):
+        """Add the ``OdooListItem`` paragraph style with its own font-size.
+
+        Regression guard: this style must carry its own ``fo:font-
+        size`` (matching ``OdooHtmlTableText``'s reasoning) -- each
+        ``<li>`` is its own new paragraph (see ``_get_html_text_list``),
+        not the placeholder's own, so without an explicit size it falls
+        back to the same oversized document default a missing
+        ``OdooHtmlTableText`` would. Unlike ``OdooHtmlTableText``, no
+        margin-left/text-indent belongs on this style: the hang indent
+        instead comes from the ``OdooOL``/``OdooUL`` list styles (see
+        ``test_html_list_styles_injected``) that this same method
+        injects.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_table_style(content_odt())
+        content_root = self._content_of(result)
+        auto_styles = content_root.find(_q("office", "automatic-styles"))
+        style = None
+        for child in auto_styles:
+            if child.get(_q("style", "name")) == "OdooListItem":
+                style = child
+                break
+        self.assertIsNotNone(style)
+        self.assertEqual(style.get(_q("style", "family")), "paragraph")
+        self.assertIsNone(style.find(_q("style", "paragraph-properties")))
+        text_props = style.find(_q("style", "text-properties"))
+        self.assertIsNotNone(text_props)
+        self.assertTrue(text_props.get(_q("fo", "font-size")))
+
+    def test_html_list_styles_injected(self):
+        """Add the ``OdooOL``/``OdooUL`` ``text:list-style`` elements.
+
+        Each carries one level (number for ``OdooOL``, bullet for
+        ``OdooUL``) with a ``style:list-level-label-alignment`` --
+        this is what lets the renderer compute a wrapped continuation
+        line's hang indent against the marker it generates, instead of
+        this module guessing a fixed indent (see
+        ``_HTML_LIST_ITEM_INDENT``'s comment).
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_table_style(content_odt())
+        content_root = self._content_of(result)
+        auto_styles = content_root.find(_q("office", "automatic-styles"))
+
+        ol_style = None
+        ul_style = None
+        for child in auto_styles:
+            name = child.get(_q("style", "name"))
+            if name == "OdooOL":
+                ol_style = child
+            elif name == "OdooUL":
+                ul_style = child
+        self.assertIsNotNone(ol_style)
+        self.assertIsNotNone(ul_style)
+
+        number_level = ol_style.find(_q("text", "list-level-style-number"))
+        self.assertIsNotNone(number_level)
+        self.assertEqual(number_level.get(_q("style", "num-format")), "1")
+
+        bullet_level = ul_style.find(_q("text", "list-level-style-bullet"))
+        self.assertIsNotNone(bullet_level)
+        self.assertTrue(bullet_level.get(_q("text", "bullet-char")))
+
+        for level in (number_level, bullet_level):
+            level_props = level.find(_q("style", "list-level-properties"))
+            self.assertIsNotNone(level_props)
+            alignment = level_props.find(_q("style", "list-level-label-alignment"))
+            self.assertIsNotNone(alignment)
+            self.assertTrue(alignment.get(_q("fo", "margin-left")))
+            self.assertTrue(alignment.get(_q("fo", "text-indent")).startswith("-"))
+
     def test_html_table_style_idempotent(self):
         """Leave an already-present same-named style untouched.
 
@@ -347,6 +423,39 @@ class TestOdfMerge(TransactionCase):
         red_props = red.find(_q("style", "text-properties"))
         self.assertEqual(red_props.get(_q("fo", "color")), "#ff0000")
 
+    def test_text_styles_size_injection(self):
+        """Inject standalone and heading-paired font-size styles.
+
+        Covers the ``plain_sizes``/``heading_sizes`` parameters
+        ``_py3o_collect_html_font_sizes`` feeds this method with (see
+        ``get_template``) -- a standalone size becomes an
+        ``OdooFontSize_<n>`` style with only ``fo:font-size``; a
+        heading-paired one becomes a combined
+        ``<heading>_OdooFontSize_<n>`` style with ``fo:font-size``
+        *and* ``fo:font-weight="bold"`` in the same style (see
+        ``_get_html_text_run``'s docstring for why a heading override
+        needs one combined style rather than two nested spans).
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_text_styles(
+            content_odt(), plain_sizes={9.5}, heading_sizes={("OdooH2", 12.0)}
+        )
+        content_root = self._content_of(result)
+        auto_styles = content_root.find(_q("office", "automatic-styles"))
+        by_name = {c.get(_q("style", "name")): c for c in auto_styles}
+
+        plain = by_name["OdooFontSize_9_5"]
+        plain_props = plain.find(_q("style", "text-properties"))
+        self.assertEqual(plain_props.get(_q("fo", "font-size")), "9.5pt")
+        self.assertIsNone(plain_props.get(_q("fo", "font-weight")))
+
+        combined = by_name["OdooH2_OdooFontSize_12"]
+        combined_props = combined.find(_q("style", "text-properties"))
+        self.assertEqual(combined_props.get(_q("fo", "font-size")), "12pt")
+        self.assertEqual(combined_props.get(_q("fo", "font-weight")), "bold")
+
     def test_text_styles_idempotent(self):
         """Leave an already-present same-named style untouched.
 
@@ -382,6 +491,50 @@ class TestOdfMerge(TransactionCase):
         """
         result = self.engine._py3o_ensure_html_text_styles(b"not a zip")
         self.assertEqual(result, b"not a zip")
+
+    # -- _py3o_collect_html_font_sizes() ---------------------------------------
+    # Unlike the ODF-bytes helpers above, this one genuinely needs an Odoo
+    # record with an Html field -- it scans `model_instance._fields`, which a
+    # raw ODT fixture cannot stand in for. `mail.template.body_html` is used
+    # purely as a convenient, dependency-light Html field already present in
+    # every Odoo database; nothing here is specific to mail templates.
+
+    def test_collect_html_font_sizes_from_record(self):
+        """Scan a record's own Html field for plain and heading font-sizes.
+
+        A record's own DB-record nature is exactly what this method
+        needs to prove: it must read ``getattr(rec, fname)`` off a
+        real record, not off static bytes.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above -- this asserts the
+        method's own Python return value, not a record side effect
+        ``odoo-yaml-test`` could express).
+        """
+        template = self.env["mail.template"].create(
+            {
+                "name": "ssi_py3o size scan test",
+                "body_html": (
+                    '<h3><font style="font-size: 16px;">Heading</font></h3>'
+                    '<p><span style="font-size: 10px;">Plain</span></p>'
+                ),
+            }
+        )
+        plain_sizes, heading_sizes = self.engine._py3o_collect_html_font_sizes(template)
+        self.assertIn(7.5, plain_sizes)
+        self.assertIn(("OdooH3", 12.0), heading_sizes)
+
+    def test_collect_html_font_sizes_empty_for_no_model(self):
+        """Return empty sets for a falsy ``model_instance`` (e.g. no record).
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_collect_html_font_sizes_from_record`` above).
+        """
+        plain_sizes, heading_sizes = self.engine._py3o_collect_html_font_sizes(
+            self.env["mail.template"]
+        )
+        self.assertEqual(plain_sizes, set())
+        self.assertEqual(heading_sizes, set())
 
     # -- helpers --------------------------------------------------------------
 
