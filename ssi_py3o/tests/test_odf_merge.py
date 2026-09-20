@@ -423,6 +423,39 @@ class TestOdfMerge(TransactionCase):
         red_props = red.find(_q("style", "text-properties"))
         self.assertEqual(red_props.get(_q("fo", "color")), "#ff0000")
 
+    def test_text_styles_size_injection(self):
+        """Inject standalone and heading-paired font-size styles.
+
+        Covers the ``plain_sizes``/``heading_sizes`` parameters
+        ``_py3o_collect_html_font_sizes`` feeds this method with (see
+        ``get_template``) -- a standalone size becomes an
+        ``OdooFontSize_<n>`` style with only ``fo:font-size``; a
+        heading-paired one becomes a combined
+        ``<heading>_OdooFontSize_<n>`` style with ``fo:font-size``
+        *and* ``fo:font-weight="bold"`` in the same style (see
+        ``_get_html_text_run``'s docstring for why a heading override
+        needs one combined style rather than two nested spans).
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_text_styles(
+            content_odt(), plain_sizes={9.5}, heading_sizes={("OdooH2", 12.0)}
+        )
+        content_root = self._content_of(result)
+        auto_styles = content_root.find(_q("office", "automatic-styles"))
+        by_name = {c.get(_q("style", "name")): c for c in auto_styles}
+
+        plain = by_name["OdooFontSize_9_5"]
+        plain_props = plain.find(_q("style", "text-properties"))
+        self.assertEqual(plain_props.get(_q("fo", "font-size")), "9.5pt")
+        self.assertIsNone(plain_props.get(_q("fo", "font-weight")))
+
+        combined = by_name["OdooH2_OdooFontSize_12"]
+        combined_props = combined.find(_q("style", "text-properties"))
+        self.assertEqual(combined_props.get(_q("fo", "font-size")), "12pt")
+        self.assertEqual(combined_props.get(_q("fo", "font-weight")), "bold")
+
     def test_text_styles_idempotent(self):
         """Leave an already-present same-named style untouched.
 
@@ -458,6 +491,50 @@ class TestOdfMerge(TransactionCase):
         """
         result = self.engine._py3o_ensure_html_text_styles(b"not a zip")
         self.assertEqual(result, b"not a zip")
+
+    # -- _py3o_collect_html_font_sizes() ---------------------------------------
+    # Unlike the ODF-bytes helpers above, this one genuinely needs an Odoo
+    # record with an Html field -- it scans `model_instance._fields`, which a
+    # raw ODT fixture cannot stand in for. `mail.template.body_html` is used
+    # purely as a convenient, dependency-light Html field already present in
+    # every Odoo database; nothing here is specific to mail templates.
+
+    def test_collect_html_font_sizes_from_record(self):
+        """Scan a record's own Html field for plain and heading font-sizes.
+
+        A record's own DB-record nature is exactly what this method
+        needs to prove: it must read ``getattr(rec, fname)`` off a
+        real record, not off static bytes.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above -- this asserts the
+        method's own Python return value, not a record side effect
+        ``odoo-yaml-test`` could express).
+        """
+        template = self.env["mail.template"].create(
+            {
+                "name": "ssi_py3o size scan test",
+                "body_html": (
+                    '<h3><font style="font-size: 16px;">Heading</font></h3>'
+                    '<p><span style="font-size: 10px;">Plain</span></p>'
+                ),
+            }
+        )
+        plain_sizes, heading_sizes = self.engine._py3o_collect_html_font_sizes(template)
+        self.assertIn(7.5, plain_sizes)
+        self.assertIn(("OdooH3", 12.0), heading_sizes)
+
+    def test_collect_html_font_sizes_empty_for_no_model(self):
+        """Return empty sets for a falsy ``model_instance`` (e.g. no record).
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_collect_html_font_sizes_from_record`` above).
+        """
+        plain_sizes, heading_sizes = self.engine._py3o_collect_html_font_sizes(
+            self.env["mail.template"]
+        )
+        self.assertEqual(plain_sizes, set())
+        self.assertEqual(heading_sizes, set())
 
     # -- helpers --------------------------------------------------------------
 

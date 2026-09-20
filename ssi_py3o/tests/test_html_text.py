@@ -304,6 +304,45 @@ class TestHtmlText(YamlTransactionCase):
             result, '<text:span text:style-name="OdooFontSize_13_5">Big</text:span>'
         )
 
+    def test_get_html_text_font_sizes_splits_heading_and_plain(self):
+        """Split ``font-size`` occurrences by whether they sit inside a heading.
+
+        The scanning half of the font-size fix: ``_get_html_text``
+        itself only resolves a size found *while walking one element*,
+        so this method (used by ``_py3o_collect_html_font_sizes`` to
+        pre-register styles, see ``get_template``) has to separately
+        walk the whole value up front to know which sizes will turn up
+        inside a heading versus outside one.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text_font_sizes``, not a record side effect).
+        """
+        plain_sizes, heading_sizes = self.engine._get_html_text_font_sizes(
+            '<h2><font style="font-size: 12px;">S</font></h2>'
+            '<p><span style="font-size: 18px;">Big</span></p>'
+        )
+        self.assertEqual(plain_sizes, {13.5})
+        self.assertEqual(heading_sizes, {("OdooH2", 9.0)})
+
+    def test_get_html_text_font_sizes_empty_for_blank_value(self):
+        """Return two empty sets for a falsy/blank Html value.
+
+        Pure Python -- trigger P1 (L-01: same reasoning as
+        ``test_get_html_text_font_sizes_splits_heading_and_plain``).
+        """
+        self.assertEqual(self.engine._get_html_text_font_sizes(False), (set(), set()))
+        self.assertEqual(self.engine._get_html_text_font_sizes(""), (set(), set()))
+
+    def test_px_or_pt_to_pt_rounds_to_nearest_half_point(self):
+        """Convert px to pt at 0.75pt/px, rounded to the nearest 0.5pt.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_px_or_pt_to_pt``, not a record side effect).
+        """
+        self.assertEqual(self.engine._px_or_pt_to_pt(12, "px"), 9.0)
+        self.assertEqual(self.engine._px_or_pt_to_pt(10, "pt"), 10.0)
+        self.assertEqual(self.engine._px_or_pt_to_pt(11.8, "px"), 9.0)
+
     def test_whitespace_only_paragraph_adds_no_line(self):
         """Drop a stray whitespace-only ``<p>`` between two paragraphs.
 
