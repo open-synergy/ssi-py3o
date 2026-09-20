@@ -12,6 +12,7 @@ CI runs on Python 3.6 — no walrus operator (`:=`).
 """
 import base64
 from io import BytesIO
+from unittest import mock
 from zipfile import ZipFile
 
 from lxml import etree
@@ -526,6 +527,73 @@ class TestOdfMerge(TransactionCase):
         """
         result = self.engine._py3o_ensure_html_text_styles(b"not a zip")
         self.assertEqual(result, b"not a zip")
+
+    # -- _py3o_check_html_fonts() -----------------------------------------
+    # content_odt()'s office:font-face-decls (see common.py) always declares
+    # exactly one font, named "Report Font" -- these tests control what
+    # fc-match would say about it by mocking subprocess.run instead of
+    # depending on whatever fonts happen to be installed on the machine
+    # running the test suite.
+
+    def test_check_html_fonts_warns_when_missing(self):
+        """Log one warning when the declared font isn't installed.
+
+        Pure Python -- trigger P6 (L-15, L-17: mocking an external
+        ``fc-match`` process call and capturing the log it produces
+        aren't expressible in the YAML DSL).
+        """
+        with mock.patch(
+            "odoo.addons.ssi_py3o.models.py3o_report.subprocess.run"
+        ) as run:
+            run.return_value = mock.Mock(stdout="Liberation Sans\n")
+            with self.assertLogs(
+                "odoo.addons.ssi_py3o.models.py3o_report", level="WARNING"
+            ) as cm:
+                self.engine._py3o_check_html_fonts(content_odt())
+        self.assertIn("Report Font", cm.output[0])
+        self.assertIn("Liberation Sans", cm.output[0])
+
+    def test_check_html_fonts_silent_when_installed(self):
+        """Log nothing when ``fc-match`` resolves the font to itself.
+
+        ``assertLogs`` itself raises ``AssertionError`` when nothing
+        was logged at/above the given level, so asserting that raise
+        is this Python version's way of asserting "no warning" (the
+        3.10+ ``assertNoLogs`` isn't available on this codebase's
+        Python 3.8).
+
+        Pure Python -- trigger P6 (L-15, L-17: same as
+        ``test_check_html_fonts_warns_when_missing`` above).
+        """
+        with mock.patch(
+            "odoo.addons.ssi_py3o.models.py3o_report.subprocess.run"
+        ) as run:
+            run.return_value = mock.Mock(stdout="Report Font\n")
+            with self.assertRaises(AssertionError):
+                with self.assertLogs(
+                    "odoo.addons.ssi_py3o.models.py3o_report", level="WARNING"
+                ):
+                    self.engine._py3o_check_html_fonts(content_odt())
+
+    def test_check_html_fonts_fails_open_without_fc_match(self):
+        """Do nothing (no exception) when ``fc-match`` isn't available.
+
+        Pure Python -- trigger P6 (L-15, L-17: same as
+        ``test_check_html_fonts_warns_when_missing`` above).
+        """
+        with mock.patch(
+            "odoo.addons.ssi_py3o.models.py3o_report.subprocess.run",
+            side_effect=FileNotFoundError,
+        ):
+            self.engine._py3o_check_html_fonts(content_odt())  # no raise
+
+    def test_check_html_fonts_fail_open_on_corrupt_input(self):
+        """Do nothing when the input isn't a valid ODT.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        self.engine._py3o_check_html_fonts(b"not a zip")  # no raise
 
     # -- _py3o_collect_html_font_sizes() ---------------------------------------
     # Unlike the ODF-bytes helpers above, this one genuinely needs an Odoo

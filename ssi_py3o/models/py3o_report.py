@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import os
 import re
+import subprocess
 import sys
 import uuid
 from copy import deepcopy
@@ -40,6 +41,7 @@ _ODF_NS = {
     "xlink": "http://www.w3.org/1999/xlink",
     "loext": "urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0",
     "manifest": "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0",
+    "svg": "urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0",
 }
 
 
@@ -280,6 +282,7 @@ class Py3oReport(models.TransientModel):
         report_bytes = self._py3o_ensure_html_text_styles(
             report_bytes, plain_sizes, heading_sizes
         )
+        self._py3o_check_html_fonts(report_bytes)
         report = self.ir_actions_report_id
         base_bytes = report._py3o_get_base_template_data()
         if not base_bytes:
@@ -1419,6 +1422,82 @@ class Py3oReport(models.TransientModel):
             )
         }
         return self._py3o_write_merged_zip(report_zip_in, new_zip_entries)
+
+    def _py3o_check_html_fonts(self, report_bytes):
+        """Warn about any font-face this template declares but the server lacks.
+
+        ``get_html_text``'s automatic styles (headings,
+        ``_HTML_BASIC_INLINE_STYLES``, colors, font-sizes) never set
+        ``fo:font-name`` -- the actual typeface printed always comes
+        from whatever the template's OWN paragraph/character styles
+        declare (see ``_get_html_text_run``'s docstring). A font a
+        template's ``office:font-face-decls`` names but this machine
+        doesn't have installed renders as whatever LibreOffice's
+        fontconfig substitution picks instead, with no error and no
+        visual cue in the generated PDF that anything was substituted.
+        This is exactly how ``Report RR GX5 Font 8.odt`` (AURA-SWR)'s
+        "Metropolis" -- applied by nearly every automatic paragraph
+        style in that template, with no ``style:font-family-generic``
+        fallback declared -- went unnoticed locally (silently falling
+        back to Liberation Sans) until compared against the aura-swr
+        server, where the font actually was installed (20 Sep 2026).
+
+        Read-only and non-fatal by design, the same posture as every
+        other ``_py3o_ensure_*``/``_get_html_text_*`` method in this
+        file: a substituted font degrades the printed look, it doesn't
+        make the report unprintable, so this only logs one warning per
+        missing font -- it never raises and never blocks rendering.
+        Requires ``fc-match`` (the ``fontconfig`` package); silently
+        does nothing if that binary isn't on ``PATH`` or a call to it
+        errors, rather than failing a report render over a diagnostic
+        feature being unavailable.
+
+        :param report_bytes: raw ODT template bytes, before py3o's
+            own base-template (letterhead) merge and rendering
+        :return: nothing; only logs a warning per missing font found
+        :rtype: None
+        """
+        try:
+            report_zip = ZipFile(BytesIO(report_bytes))
+        except BadZipFile:
+            return
+
+        font_names = set()
+        for member in ("content.xml", "styles.xml"):
+            try:
+                root = etree.fromstring(report_zip.read(member))
+            except (KeyError, etree.XMLSyntaxError):
+                continue
+            for face in root.iter(_clark("style", "font-face")):
+                family = face.get(_clark("svg", "font-family"))
+                if family:
+                    font_names.add(family.strip("'"))
+        if not font_names:
+            return
+
+        for font_name in sorted(font_names):
+            try:
+                result = subprocess.run(
+                    ["fc-match", "--format=%{family}", font_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                # fc-match missing/misbehaving on this machine -- a
+                # diagnostic warning is not worth failing report
+                # generation over, and every other font name would
+                # fail the exact same way, so stop checking entirely.
+                return
+            resolved = result.stdout.strip()
+            if resolved and resolved != font_name:
+                logger.warning(
+                    "Py3o report template references font %r, which is "
+                    "not installed on this server -- LibreOffice will "
+                    "silently substitute %r instead.",
+                    font_name,
+                    resolved,
+                )
 
     def _get_html_text_table(self, el):
         """Render an HTML ``<table>`` as a real, nested ODF table.
