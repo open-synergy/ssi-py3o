@@ -559,8 +559,8 @@ class TestOdfMerge(TransactionCase):
         ``assertLogs`` itself raises ``AssertionError`` when nothing
         was logged at/above the given level, so asserting that raise
         is this Python version's way of asserting "no warning" (the
-        3.10+ ``assertNoLogs`` isn't available on this codebase's
-        Python 3.8).
+        3.10+ ``assertNoLogs`` isn't available on CI's Python 3.6 --
+        see this file's module docstring).
 
         Pure Python -- trigger P6 (L-15, L-17: same as
         ``test_check_html_fonts_warns_when_missing`` above).

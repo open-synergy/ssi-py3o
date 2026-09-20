@@ -1479,8 +1479,9 @@ class Py3oReport(models.TransientModel):
             try:
                 result = subprocess.run(
                     ["fc-match", "--format=%{family}", font_name],
-                    capture_output=True,
-                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
                     timeout=10,
                 )
             except (OSError, subprocess.TimeoutExpired):
