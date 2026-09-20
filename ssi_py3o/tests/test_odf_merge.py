@@ -401,7 +401,7 @@ class TestOdfMerge(TransactionCase):
     # <office:automatic-styles> to prove anything against).
 
     def test_text_styles_injected(self):
-        """Add all 6 heading styles and all 16 color styles.
+        """Add the 3 basic inline styles, all 6 heading, all 16 color styles.
 
         Pure Python -- trigger P8 (L-01, L-19: same as
         ``test_html_table_style_injected`` above).
@@ -410,6 +410,8 @@ class TestOdfMerge(TransactionCase):
         content_root = self._content_of(result)
         auto_styles = content_root.find(_q("office", "automatic-styles"))
         names = {c.get(_q("style", "name")) for c in auto_styles}
+        for expected in ("Bold", "Italic", "Underline"):
+            self.assertIn(expected, names)
         for expected in ("OdooH1", "OdooH2", "OdooH3", "OdooH4", "OdooH5", "OdooH6"):
             self.assertIn(expected, names)
         self.assertIn("OdooColor_ff0000", names)  # red
@@ -422,6 +424,38 @@ class TestOdfMerge(TransactionCase):
         )
         red_props = red.find(_q("style", "text-properties"))
         self.assertEqual(red_props.get(_q("fo", "color")), "#ff0000")
+
+    def test_text_styles_basic_inline_injected(self):
+        """Give Bold/Italic/Underline the exact properties ``get_html_text_run`` needs.
+
+        Regression test: these three used to be the only styles
+        ``_get_html_text_run`` referenced (``text:style-name="Bold"``
+        etc.) without ``_py3o_ensure_html_text_styles`` ever
+        guaranteeing they existed -- a source template that never
+        happened to define a character style by one of these exact
+        names made LibreOffice silently ignore the reference, printing
+        plain text where bold/italic/underline should have rendered
+        (confirmed against a real report template with no such
+        styles: ``Report RR GX5 Font 8.odt``, AURA-SWR, 20 Sep 2026).
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_text_styles(content_odt())
+        content_root = self._content_of(result)
+        auto_styles = content_root.find(_q("office", "automatic-styles"))
+        by_name = {c.get(_q("style", "name")): c for c in auto_styles}
+
+        bold_props = by_name["Bold"].find(_q("style", "text-properties"))
+        self.assertEqual(bold_props.get(_q("fo", "font-weight")), "bold")
+
+        italic_props = by_name["Italic"].find(_q("style", "text-properties"))
+        self.assertEqual(italic_props.get(_q("fo", "font-style")), "italic")
+
+        underline_props = by_name["Underline"].find(_q("style", "text-properties"))
+        self.assertEqual(
+            underline_props.get(_q("style", "text-underline-style")), "solid"
+        )
 
     def test_text_styles_size_injection(self):
         """Inject standalone and heading-paired font-size styles.
@@ -462,7 +496,7 @@ class TestOdfMerge(TransactionCase):
         Mirrors ``test_html_table_style_idempotent``: pre-seeds
         ``OdooH1`` distinguishably (no ``fo:font-size``) to prove a
         second call does not duplicate or overwrite it, while still
-        adding the other 21 styles that were genuinely missing.
+        adding the other 24 styles that were genuinely missing.
 
         Pure Python -- trigger P8 (L-01, L-19: same as
         ``test_html_table_style_injected`` above).
@@ -478,8 +512,9 @@ class TestOdfMerge(TransactionCase):
         matches = [c for c in auto_styles if c.get(_q("style", "name")) == "OdooH1"]
         self.assertEqual(len(matches), 1)
         self.assertIsNone(matches[0].find(_q("style", "text-properties")))
-        # the other 21 styles were still added around the pre-seeded one
+        # the other 24 styles were still added around the pre-seeded one
         names = {c.get(_q("style", "name")) for c in auto_styles}
+        self.assertIn("Bold", names)
         self.assertIn("OdooH2", names)
         self.assertIn("OdooColor_ff0000", names)
 
