@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import os
 import re
+import subprocess
 import sys
 import uuid
 from copy import deepcopy
@@ -40,6 +41,7 @@ _ODF_NS = {
     "xlink": "http://www.w3.org/1999/xlink",
     "loext": "urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0",
     "manifest": "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0",
+    "svg": "urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0",
 }
 
 
@@ -202,6 +204,36 @@ _HTML_HEADING_FONT_SIZES = {
     "h6": "10pt",
 }
 
+# text (character) automatic styles injected by _py3o_ensure_html_text_styles()
+# for _get_html_text_run()'s Bold/Italic/Underline spans -- unlike every
+# other style that method injects (headings, colors, font-sizes), these
+# three used to be the ONLY ones a source template had to already define
+# itself: get_html_text_run() has always referenced them by these exact
+# names, but nothing in this file ever guaranteed they existed. A template
+# that never happened to define a character style literally named
+# "Bold"/"Italic"/"Underline" made LibreOffice silently ignore the
+# unresolved text:style-name -- no error, just plain text where bold/
+# italic/underline should have rendered. Fixed values (not scanned from
+# the record, unlike font sizes), so -- like headings/colors -- they can
+# be injected unconditionally on every render.
+_HTML_BASIC_INLINE_STYLES = {
+    "Bold": {
+        ("fo", "font-weight"): "bold",
+        ("style", "font-weight-asian"): "bold",
+        ("style", "font-weight-complex"): "bold",
+    },
+    "Italic": {
+        ("fo", "font-style"): "italic",
+        ("style", "font-style-asian"): "italic",
+        ("style", "font-style-complex"): "italic",
+    },
+    "Underline": {
+        ("style", "text-underline-style"): "solid",
+        ("style", "text-underline-width"): "auto",
+        ("style", "text-underline-color"): "font-color",
+    },
+}
+
 # The 16 standard CSS2/HTML4 keyword colors -- the FIXED, pre-registered set
 # _get_html_text_color_style() can resolve `style="color: ..."` (or
 # `<font color="...">`) against. ODF text runs can only reference an
@@ -250,6 +282,7 @@ class Py3oReport(models.TransientModel):
         report_bytes = self._py3o_ensure_html_text_styles(
             report_bytes, plain_sizes, heading_sizes
         )
+        self._py3o_check_html_fonts(report_bytes)
         report = self.ir_actions_report_id
         base_bytes = report._py3o_get_base_template_data()
         if not base_bytes:
@@ -1264,19 +1297,21 @@ class Py3oReport(models.TransientModel):
     def _py3o_ensure_html_text_styles(
         self, report_bytes, plain_sizes=(), heading_sizes=()
     ):
-        """Inject the heading/color/font-size styles ``get_html_text`` uses.
+        """Inject the Bold/Italic/Underline/heading/color/font-size styles.
 
         Same constraint and technique as
         ``_py3o_ensure_html_table_style`` (see its docstring): none of
-        an ``<h1>``-``<h6>`` font-size style, a ``style="color: ..."``
+        the ``Bold``/``Italic``/``Underline`` character styles, an
+        ``<h1>``-``<h6>`` font-size style, a ``style="color: ..."``
         color style, a standalone inline ``font-size`` style, or a
-        combined heading+size style can already exist in the source
-        template, so all four are added to ``content.xml``'s
-        ``<office:automatic-styles>`` here, before py3o ever sees the
-        template. Idempotent per style (a style already present by
-        name is left untouched); unlike the table-cell style this
-        injects up to ``22 + len(plain_sizes) + len(heading_sizes)``
-        styles (6 headings + 16 colors + one per size
+        combined heading+size style can be relied on to already exist
+        in the source template, so all five are added to
+        ``content.xml``'s ``<office:automatic-styles>`` here, before
+        py3o ever sees the template. Idempotent per style (a style
+        already present by name is left untouched); unlike the
+        table-cell style this injects up to
+        ``25 + len(plain_sizes) + len(heading_sizes)`` styles (3 basic
+        inline styles + 6 headings + 16 colors + one per size
         ``_py3o_collect_html_font_sizes`` found, standalone or
         heading-paired) in one pass, skipping only individual names
         that already exist.
@@ -1321,6 +1356,17 @@ class Py3oReport(models.TransientModel):
             return report_bytes
 
         changed = False
+        for style_name, props_map in _HTML_BASIC_INLINE_STYLES.items():
+            if self._find_style_by_name(auto_styles, style_name) is not None:
+                continue
+            style = etree.SubElement(auto_styles, _clark("style", "style"))
+            style.set(_clark("style", "name"), style_name)
+            style.set(_clark("style", "family"), "text")
+            props = etree.SubElement(style, _clark("style", "text-properties"))
+            for (prefix, attr), value in props_map.items():
+                props.set(_clark(prefix, attr), value)
+            changed = True
+
         for tag, style_name in _HTML_HEADING_STYLE_NAMES.items():
             if self._find_style_by_name(auto_styles, style_name) is not None:
                 continue
@@ -1376,6 +1422,83 @@ class Py3oReport(models.TransientModel):
             )
         }
         return self._py3o_write_merged_zip(report_zip_in, new_zip_entries)
+
+    def _py3o_check_html_fonts(self, report_bytes):
+        """Warn about any font-face this template declares but the server lacks.
+
+        ``get_html_text``'s automatic styles (headings,
+        ``_HTML_BASIC_INLINE_STYLES``, colors, font-sizes) never set
+        ``fo:font-name`` -- the actual typeface printed always comes
+        from whatever the template's OWN paragraph/character styles
+        declare (see ``_get_html_text_run``'s docstring). A font a
+        template's ``office:font-face-decls`` names but this machine
+        doesn't have installed renders as whatever LibreOffice's
+        fontconfig substitution picks instead, with no error and no
+        visual cue in the generated PDF that anything was substituted.
+        This is exactly how ``Report RR GX5 Font 8.odt`` (AURA-SWR)'s
+        "Metropolis" -- applied by nearly every automatic paragraph
+        style in that template, with no ``style:font-family-generic``
+        fallback declared -- went unnoticed locally (silently falling
+        back to Liberation Sans) until compared against the aura-swr
+        server, where the font actually was installed (20 Sep 2026).
+
+        Read-only and non-fatal by design, the same posture as every
+        other ``_py3o_ensure_*``/``_get_html_text_*`` method in this
+        file: a substituted font degrades the printed look, it doesn't
+        make the report unprintable, so this only logs one warning per
+        missing font -- it never raises and never blocks rendering.
+        Requires ``fc-match`` (the ``fontconfig`` package); silently
+        does nothing if that binary isn't on ``PATH`` or a call to it
+        errors, rather than failing a report render over a diagnostic
+        feature being unavailable.
+
+        :param report_bytes: raw ODT template bytes, before py3o's
+            own base-template (letterhead) merge and rendering
+        :return: nothing; only logs a warning per missing font found
+        :rtype: None
+        """
+        try:
+            report_zip = ZipFile(BytesIO(report_bytes))
+        except BadZipFile:
+            return
+
+        font_names = set()
+        for member in ("content.xml", "styles.xml"):
+            try:
+                root = etree.fromstring(report_zip.read(member))
+            except (KeyError, etree.XMLSyntaxError):
+                continue
+            for face in root.iter(_clark("style", "font-face")):
+                family = face.get(_clark("svg", "font-family"))
+                if family:
+                    font_names.add(family.strip("'"))
+        if not font_names:
+            return
+
+        for font_name in sorted(font_names):
+            try:
+                result = subprocess.run(
+                    ["fc-match", "--format=%{family}", font_name],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                # fc-match missing/misbehaving on this machine -- a
+                # diagnostic warning is not worth failing report
+                # generation over, and every other font name would
+                # fail the exact same way, so stop checking entirely.
+                return
+            resolved = result.stdout.strip()
+            if resolved and resolved != font_name:
+                logger.warning(
+                    "Py3o report template references font %r, which is "
+                    "not installed on this server -- LibreOffice will "
+                    "silently substitute %r instead.",
+                    font_name,
+                    resolved,
+                )
 
     def _get_html_text_table(self, el):
         """Render an HTML ``<table>`` as a real, nested ODF table.

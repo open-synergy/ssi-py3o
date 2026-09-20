@@ -12,6 +12,7 @@ CI runs on Python 3.6 — no walrus operator (`:=`).
 """
 import base64
 from io import BytesIO
+from unittest import mock
 from zipfile import ZipFile
 
 from lxml import etree
@@ -401,7 +402,7 @@ class TestOdfMerge(TransactionCase):
     # <office:automatic-styles> to prove anything against).
 
     def test_text_styles_injected(self):
-        """Add all 6 heading styles and all 16 color styles.
+        """Add the 3 basic inline styles, all 6 heading, all 16 color styles.
 
         Pure Python -- trigger P8 (L-01, L-19: same as
         ``test_html_table_style_injected`` above).
@@ -410,6 +411,8 @@ class TestOdfMerge(TransactionCase):
         content_root = self._content_of(result)
         auto_styles = content_root.find(_q("office", "automatic-styles"))
         names = {c.get(_q("style", "name")) for c in auto_styles}
+        for expected in ("Bold", "Italic", "Underline"):
+            self.assertIn(expected, names)
         for expected in ("OdooH1", "OdooH2", "OdooH3", "OdooH4", "OdooH5", "OdooH6"):
             self.assertIn(expected, names)
         self.assertIn("OdooColor_ff0000", names)  # red
@@ -422,6 +425,38 @@ class TestOdfMerge(TransactionCase):
         )
         red_props = red.find(_q("style", "text-properties"))
         self.assertEqual(red_props.get(_q("fo", "color")), "#ff0000")
+
+    def test_text_styles_basic_inline_injected(self):
+        """Give Bold/Italic/Underline the exact properties ``get_html_text_run`` needs.
+
+        Regression test: these three used to be the only styles
+        ``_get_html_text_run`` referenced (``text:style-name="Bold"``
+        etc.) without ``_py3o_ensure_html_text_styles`` ever
+        guaranteeing they existed -- a source template that never
+        happened to define a character style by one of these exact
+        names made LibreOffice silently ignore the reference, printing
+        plain text where bold/italic/underline should have rendered
+        (confirmed against a real report template with no such
+        styles: ``Report RR GX5 Font 8.odt``, AURA-SWR, 20 Sep 2026).
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_text_styles(content_odt())
+        content_root = self._content_of(result)
+        auto_styles = content_root.find(_q("office", "automatic-styles"))
+        by_name = {c.get(_q("style", "name")): c for c in auto_styles}
+
+        bold_props = by_name["Bold"].find(_q("style", "text-properties"))
+        self.assertEqual(bold_props.get(_q("fo", "font-weight")), "bold")
+
+        italic_props = by_name["Italic"].find(_q("style", "text-properties"))
+        self.assertEqual(italic_props.get(_q("fo", "font-style")), "italic")
+
+        underline_props = by_name["Underline"].find(_q("style", "text-properties"))
+        self.assertEqual(
+            underline_props.get(_q("style", "text-underline-style")), "solid"
+        )
 
     def test_text_styles_size_injection(self):
         """Inject standalone and heading-paired font-size styles.
@@ -462,7 +497,7 @@ class TestOdfMerge(TransactionCase):
         Mirrors ``test_html_table_style_idempotent``: pre-seeds
         ``OdooH1`` distinguishably (no ``fo:font-size``) to prove a
         second call does not duplicate or overwrite it, while still
-        adding the other 21 styles that were genuinely missing.
+        adding the other 24 styles that were genuinely missing.
 
         Pure Python -- trigger P8 (L-01, L-19: same as
         ``test_html_table_style_injected`` above).
@@ -478,8 +513,9 @@ class TestOdfMerge(TransactionCase):
         matches = [c for c in auto_styles if c.get(_q("style", "name")) == "OdooH1"]
         self.assertEqual(len(matches), 1)
         self.assertIsNone(matches[0].find(_q("style", "text-properties")))
-        # the other 21 styles were still added around the pre-seeded one
+        # the other 24 styles were still added around the pre-seeded one
         names = {c.get(_q("style", "name")) for c in auto_styles}
+        self.assertIn("Bold", names)
         self.assertIn("OdooH2", names)
         self.assertIn("OdooColor_ff0000", names)
 
@@ -491,6 +527,73 @@ class TestOdfMerge(TransactionCase):
         """
         result = self.engine._py3o_ensure_html_text_styles(b"not a zip")
         self.assertEqual(result, b"not a zip")
+
+    # -- _py3o_check_html_fonts() -----------------------------------------
+    # content_odt()'s office:font-face-decls (see common.py) always declares
+    # exactly one font, named "Report Font" -- these tests control what
+    # fc-match would say about it by mocking subprocess.run instead of
+    # depending on whatever fonts happen to be installed on the machine
+    # running the test suite.
+
+    def test_check_html_fonts_warns_when_missing(self):
+        """Log one warning when the declared font isn't installed.
+
+        Pure Python -- trigger P6 (L-15, L-17: mocking an external
+        ``fc-match`` process call and capturing the log it produces
+        aren't expressible in the YAML DSL).
+        """
+        with mock.patch(
+            "odoo.addons.ssi_py3o.models.py3o_report.subprocess.run"
+        ) as run:
+            run.return_value = mock.Mock(stdout="Liberation Sans\n")
+            with self.assertLogs(
+                "odoo.addons.ssi_py3o.models.py3o_report", level="WARNING"
+            ) as cm:
+                self.engine._py3o_check_html_fonts(content_odt())
+        self.assertIn("Report Font", cm.output[0])
+        self.assertIn("Liberation Sans", cm.output[0])
+
+    def test_check_html_fonts_silent_when_installed(self):
+        """Log nothing when ``fc-match`` resolves the font to itself.
+
+        ``assertLogs`` itself raises ``AssertionError`` when nothing
+        was logged at/above the given level, so asserting that raise
+        is this Python version's way of asserting "no warning" (the
+        3.10+ ``assertNoLogs`` isn't available on CI's Python 3.6 --
+        see this file's module docstring).
+
+        Pure Python -- trigger P6 (L-15, L-17: same as
+        ``test_check_html_fonts_warns_when_missing`` above).
+        """
+        with mock.patch(
+            "odoo.addons.ssi_py3o.models.py3o_report.subprocess.run"
+        ) as run:
+            run.return_value = mock.Mock(stdout="Report Font\n")
+            with self.assertRaises(AssertionError):
+                with self.assertLogs(
+                    "odoo.addons.ssi_py3o.models.py3o_report", level="WARNING"
+                ):
+                    self.engine._py3o_check_html_fonts(content_odt())
+
+    def test_check_html_fonts_fails_open_without_fc_match(self):
+        """Do nothing (no exception) when ``fc-match`` isn't available.
+
+        Pure Python -- trigger P6 (L-15, L-17: same as
+        ``test_check_html_fonts_warns_when_missing`` above).
+        """
+        with mock.patch(
+            "odoo.addons.ssi_py3o.models.py3o_report.subprocess.run",
+            side_effect=FileNotFoundError,
+        ):
+            self.engine._py3o_check_html_fonts(content_odt())  # no raise
+
+    def test_check_html_fonts_fail_open_on_corrupt_input(self):
+        """Do nothing when the input isn't a valid ODT.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        self.engine._py3o_check_html_fonts(b"not a zip")  # no raise
 
     # -- _py3o_collect_html_font_sizes() ---------------------------------------
     # Unlike the ODF-bytes helpers above, this one genuinely needs an Odoo
