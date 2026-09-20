@@ -283,6 +283,82 @@ class TestOdfMerge(TransactionCase):
         for side in ("top", "bottom", "left", "right"):
             self.assertTrue(props.get(_q("fo", "border-%s" % side)))
 
+    def test_html_list_item_style_injected(self):
+        """Add the ``OdooListItem`` paragraph style with its own font-size.
+
+        Regression guard: this style must carry its own ``fo:font-
+        size`` (matching ``OdooHtmlTableText``'s reasoning) -- each
+        ``<li>`` is its own new paragraph (see ``_get_html_text_list``),
+        not the placeholder's own, so without an explicit size it falls
+        back to the same oversized document default a missing
+        ``OdooHtmlTableText`` would. Unlike ``OdooHtmlTableText``, no
+        margin-left/text-indent belongs on this style: the hang indent
+        instead comes from the ``OdooOL``/``OdooUL`` list styles (see
+        ``test_html_list_styles_injected``) that this same method
+        injects.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_table_style(content_odt())
+        content_root = self._content_of(result)
+        auto_styles = content_root.find(_q("office", "automatic-styles"))
+        style = None
+        for child in auto_styles:
+            if child.get(_q("style", "name")) == "OdooListItem":
+                style = child
+                break
+        self.assertIsNotNone(style)
+        self.assertEqual(style.get(_q("style", "family")), "paragraph")
+        self.assertIsNone(style.find(_q("style", "paragraph-properties")))
+        text_props = style.find(_q("style", "text-properties"))
+        self.assertIsNotNone(text_props)
+        self.assertTrue(text_props.get(_q("fo", "font-size")))
+
+    def test_html_list_styles_injected(self):
+        """Add the ``OdooOL``/``OdooUL`` ``text:list-style`` elements.
+
+        Each carries one level (number for ``OdooOL``, bullet for
+        ``OdooUL``) with a ``style:list-level-label-alignment`` --
+        this is what lets the renderer compute a wrapped continuation
+        line's hang indent against the marker it generates, instead of
+        this module guessing a fixed indent (see
+        ``_HTML_LIST_ITEM_INDENT``'s comment).
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_table_style(content_odt())
+        content_root = self._content_of(result)
+        auto_styles = content_root.find(_q("office", "automatic-styles"))
+
+        ol_style = None
+        ul_style = None
+        for child in auto_styles:
+            name = child.get(_q("style", "name"))
+            if name == "OdooOL":
+                ol_style = child
+            elif name == "OdooUL":
+                ul_style = child
+        self.assertIsNotNone(ol_style)
+        self.assertIsNotNone(ul_style)
+
+        number_level = ol_style.find(_q("text", "list-level-style-number"))
+        self.assertIsNotNone(number_level)
+        self.assertEqual(number_level.get(_q("style", "num-format")), "1")
+
+        bullet_level = ul_style.find(_q("text", "list-level-style-bullet"))
+        self.assertIsNotNone(bullet_level)
+        self.assertTrue(bullet_level.get(_q("text", "bullet-char")))
+
+        for level in (number_level, bullet_level):
+            level_props = level.find(_q("style", "list-level-properties"))
+            self.assertIsNotNone(level_props)
+            alignment = level_props.find(_q("style", "list-level-label-alignment"))
+            self.assertIsNotNone(alignment)
+            self.assertTrue(alignment.get(_q("fo", "margin-left")))
+            self.assertTrue(alignment.get(_q("fo", "text-indent")).startswith("-"))
+
     def test_html_table_style_idempotent(self):
         """Leave an already-present same-named style untouched.
 

@@ -96,11 +96,91 @@ _HTML_ODF_FLUSH_TAGS = ("ul", "ol", "hr", "table") + _HTML_ODF_BLOCK_TAGS
 # blankness (see _get_html_text_blocks' skip-blank-paragraph handling).
 _ODF_TAG_RE = re.compile(r"<[^>]+>")
 
+# The close-current-paragraph/reopen escape _get_html_text_table() and
+# _get_html_text_list() both return (see either's docstring) always starts
+# and ends with these two exact strings -- shared so _join_html_text_blocks()
+# can recognize such a block by nothing more than a startswith/endswith
+# check, without either of those methods needing to expose anything else.
+_ESCAPE_BLOCK_PREFIX = "</text:span></text:p>"
+_ESCAPE_BLOCK_SUFFIX = "<text:p><text:span>"
+
+# Matches an inline `style="...font-size: <n><px|pt>..."` declaration -- see
+# Py3oReport._get_html_text_size_style(). Only px/pt are recognized (what the
+# Odoo Html editor emits); other units (em, %, ...) are left unsupported
+# rather than guessed at, same "documented limitation" posture as an
+# unlisted color in _get_html_text_color_style().
+_FONT_SIZE_RE = re.compile(r"font-size\s*:\s*([\d.]+)\s*(px|pt)")
+
+# A run of non-whitespace this long or longer (e.g. a pasted string with no
+# spaces) has no natural word-wrap point, forcing LibreOffice's PDF export
+# into a character-level "forced wrap" fallback for that one line -- which
+# some PDF renderers (confirmed against Atril/MATE's poppler-based viewer)
+# then mis-compute the line height for, visually overlapping the next line.
+# _break_long_runs() avoids that fallback entirely by giving such a run
+# normal word-wrap points every _LONG_RUN_CHUNK characters, via an inserted
+# zero-width space -- invisible, so ordinary text (virtually every real word
+# is well under this threshold) is never touched.
+_LONG_RUN_CHUNK = 20
+_LONG_RUN_RE = re.compile(r"\S{%d,}" % (_LONG_RUN_CHUNK + 1))
+_ZERO_WIDTH_SPACE = "​"
+
 # table-cell automatic style injected by _py3o_ensure_html_table_style() so
 # _get_html_text_table()'s cells render with a visible border -- see that
 # method's docstring for why it cannot simply be a style already present in
 # the source template.
 _HTML_TABLE_CELL_STYLE_NAME = "OdooHtmlTableCell"
+# A thin/"normal" table-grid weight (LibreOffice's own default table border
+# is in this range) -- the source HTML's own <table style="border: 1px..."">
+# only styles the table's outer edge, not a per-cell grid, so there is no
+# HTML value to read this from; a fixed, deliberately thin weight instead of
+# the previous 1pt (visibly heavier than a normal document table).
+_HTML_TABLE_CELL_BORDER = "0.5pt solid #000000"
+
+# paragraph-family automatic style injected by _py3o_ensure_html_table_style()
+# for _get_html_text_table()'s <text:p> cell content -- an unstyled <text:p>
+# falls back to the ODF *global default* paragraph style (this template's is
+# 12pt Liberation Serif), which reads as visibly oversized next to the rest
+# of the report's body text (rendered through automatic per-placeholder
+# styles around 8pt, not through any named/reusable paragraph style this
+# method could instead just reference). Matches this report's own body size.
+_HTML_TABLE_TEXT_STYLE_NAME = "OdooHtmlTableText"
+_HTML_TABLE_TEXT_FONT_SIZE = "8pt"
+
+# _get_html_text_list() renders <ul>/<ol> as genuine ODF list markup --
+# <text:list>/<text:list-item> driven by a <text:list-style> -- rather than
+# manually prefixing each item with "1. "/"• " text inside its own
+# hand-indented paragraph. That first approach (a fixed fo:margin-left/
+# fo:text-indent guess) could only approximate where a wrapped continuation
+# line should align, since it never actually measured the marker's own
+# rendered width; a numbered marker's width isn't even constant (single vs.
+# double-digit numbers). A real text:list-style's
+# style:list-level-label-alignment (see _py3o_append_list_style) instead has
+# the renderer itself compute and align the hang indent to the marker it
+# generates, the same way every ODF-aware word processor does. This needs
+# each <li> to be its own <text:list-item>/<text:p> (still no inline/span
+# equivalent for a paragraph-level indent), which is also why
+# _get_html_text_list uses the same close/reopen escape as
+# _get_html_text_table instead of staying inline in the shared placeholder
+# paragraph.
+_HTML_LIST_ITEM_STYLE_NAME = "OdooListItem"
+_HTML_LIST_OL_STYLE_NAME = "OdooOL"
+_HTML_LIST_UL_STYLE_NAME = "OdooUL"
+_HTML_LIST_STYLE_NAMES = {
+    "ol": _HTML_LIST_OL_STYLE_NAME,
+    "ul": _HTML_LIST_UL_STYLE_NAME,
+}
+# Where the item's own text (and any wrapped continuation line) sits,
+# measured from the paragraph's normal left margin -- this is also the
+# fo:margin-left/list-tab-stop-position _py3o_append_list_style sets. Matches
+# a browser's UL/OL default indent (~40px/2.5em) instead of the block sitting
+# flush with surrounding paragraphs the way a first attempt at this (fixed
+# tab-stop only, no block-level margin) rendered.
+_HTML_LIST_ITEM_INDENT = "0.5in"
+# How far left of that the marker itself hangs (fo:text-indent, negative) --
+# together these two are why the marker is NOT flush with the page margin
+# either: matches list-style-position: outside's default look, marker sitting
+# a bit left of the indented text block rather than at the very edge.
+_HTML_LIST_MARKER_OVERHANG = "0.2in"
 
 # text (character) automatic styles injected by _py3o_ensure_html_text_styles()
 # for <h1>-<h6> font sizes -- same constraint as the table-cell style above,
@@ -166,7 +246,10 @@ class Py3oReport(models.TransientModel):
     def get_template(self, model_instance):
         report_bytes = super().get_template(model_instance)
         report_bytes = self._py3o_ensure_html_table_style(report_bytes)
-        report_bytes = self._py3o_ensure_html_text_styles(report_bytes)
+        plain_sizes, heading_sizes = self._py3o_collect_html_font_sizes(model_instance)
+        report_bytes = self._py3o_ensure_html_text_styles(
+            report_bytes, plain_sizes, heading_sizes
+        )
         report = self.ir_actions_report_id
         base_bytes = report._py3o_get_base_template_data()
         if not base_bytes:
@@ -538,33 +621,214 @@ class Py3oReport(models.TransientModel):
                 result = label
         return result
 
+    def _py3o_collect_html_font_sizes(self, model_instance, max_depth=1):
+        """Scan ``model_instance``'s Html fields for inline ``font-size``.
+
+        Font-size styles can't be pre-registered as a fixed/bounded set
+        the way the 16 keyword colors are (see
+        ``_get_html_text_color_style``): an author can type any pixel
+        value in the Odoo Html editor. So instead this scans the actual
+        record(s) being printed for every ``font-size`` that occurs in
+        any of their Html fields, and one level of ``one2many``/
+        ``many2many`` below that (covering a line's own rich-text
+        fields, e.g. a worksheet's steps, without hardcoding field
+        names -- different worksheet report classes expose different
+        Html fields). The result feeds
+        ``_py3o_ensure_html_text_styles``, which injects exactly the
+        styles this pass found, before py3o ever sees the template.
+
+        Sizes found *inside* a heading (``<h1>``-``<h6>``) are kept
+        apart from sizes found outside one: verified empirically
+        against this pipeline's actual LibreOffice conversion, a plain
+        nested ``text:span`` override for ``fo:font-size`` alone is
+        unreliable there depending on the enclosing paragraph's own
+        style (it silently loses to the heading's preset size in some
+        cases). So a heading override is instead rendered as one
+        *combined* style carrying both the override size and the
+        heading's ``Bold`` (see ``_get_html_text_run``), which needs
+        the pairing, not just the bare point value, to pre-register.
+
+        :param model_instance: record(s) being printed
+        :param max_depth: how many ``one2many``/``many2many`` hops to
+            follow looking for further Html fields; 0 scans only
+            ``model_instance`` itself
+        :return: two-tuple ``(plain_sizes, heading_sizes)`` --
+            ``plain_sizes`` a set of point sizes found outside any
+            heading (see ``_px_or_pt_to_pt``), ``heading_sizes`` a set
+            of ``(heading_style_name, pt_value)`` pairs found inside
+            one
+        :rtype: tuple
+        """
+        plain_sizes = set()
+        heading_sizes = set()
+        if not model_instance:
+            return plain_sizes, heading_sizes
+        for fname, field in model_instance._fields.items():
+            if field.type == "html":
+                for rec in model_instance:
+                    rec_plain, rec_heading = self._get_html_text_font_sizes(
+                        getattr(rec, fname)
+                    )
+                    plain_sizes |= rec_plain
+                    heading_sizes |= rec_heading
+            elif field.type in ("one2many", "many2many") and max_depth > 0:
+                for rec in model_instance:
+                    related = getattr(rec, fname)
+                    if related:
+                        rel_plain, rel_heading = self._py3o_collect_html_font_sizes(
+                            related, max_depth - 1
+                        )
+                        plain_sizes |= rel_plain
+                        heading_sizes |= rel_heading
+        return plain_sizes, heading_sizes
+
+    def _get_html_text_font_sizes(self, html_value):
+        """Split an Html value's ``font-size`` occurrences by heading context.
+
+        :param html_value: raw HTML string from an Odoo ``Html`` field
+        :return: two-tuple ``(plain_sizes, heading_sizes)``, same shape
+            as ``_py3o_collect_html_font_sizes``'s return value
+        :rtype: tuple
+        """
+        plain_sizes = set()
+        heading_sizes = set()
+        if not html_value:
+            return plain_sizes, heading_sizes
+        try:
+            root = html.fragment_fromstring(html_value, create_parent="div")
+        except etree.ParserError:
+            return plain_sizes, heading_sizes
+
+        heading_style_by_el = {}
+        for tag, style_name in _HTML_HEADING_STYLE_NAMES.items():
+            for heading_el in root.iter(tag):
+                for descendant in heading_el.iter():
+                    heading_style_by_el[id(descendant)] = style_name
+
+        for el in root.iter():
+            match = _FONT_SIZE_RE.search((el.get("style") or "").lower())
+            if not match:
+                continue
+            pt_value = self._px_or_pt_to_pt(float(match.group(1)), match.group(2))
+            heading_style = heading_style_by_el.get(id(el))
+            if heading_style:
+                heading_sizes.add((heading_style, pt_value))
+            else:
+                plain_sizes.add(pt_value)
+        return plain_sizes, heading_sizes
+
+    def _px_or_pt_to_pt(self, value, unit):
+        """Convert a CSS ``font-size`` value to ODF points.
+
+        ``1px = 0.75pt`` (96px = 1in = 72pt), matching what a browser
+        (and the Odoo Html editor) means by a pixel font size. Rounded
+        to the nearest 0.5pt so the style set
+        ``_py3o_ensure_html_text_styles`` injects stays small and
+        stable rather than growing one entry per near-identical value
+        (e.g. 11.8px vs 12px should share a style).
+
+        :param value: numeric part of the CSS ``font-size``
+        :param unit: ``"px"`` or ``"pt"``
+        :return: point size, rounded to the nearest 0.5
+        :rtype: float
+        """
+        pt = value if unit == "pt" else value * 0.75
+        return round(pt * 2) / 2
+
+    def _html_font_size_style_name(self, pt_value):
+        """Build the ODF style name for a standalone (non-heading) point size.
+
+        Shared by ``_get_html_text_size_style`` (reading, while
+        walking an element) and ``_py3o_ensure_html_text_styles``
+        (writing, while injecting styles) so both agree on the name
+        for the same point value.
+
+        :param pt_value: point size, as returned by ``_px_or_pt_to_pt``
+        :return: an ``OdooFontSize_<n>`` style name
+        :rtype: str
+        """
+        return "OdooFontSize_%s" % ("%g" % pt_value).replace(".", "_")
+
+    def _html_heading_size_style_name(self, heading_style, size_style):
+        """Build the combined style name for a heading + size-override pair.
+
+        See ``_get_html_text_run`` for why a run inside a heading with
+        its own explicit ``font-size`` gets ONE style carrying both
+        properties, rather than two nested spans.
+
+        :param heading_style: the enclosing heading's style name
+            (``OdooH1``-``OdooH6``)
+        :param size_style: the run's own ``OdooFontSize_<n>`` style
+            name (see ``_html_font_size_style_name``)
+        :return: a combined ``<heading_style>_<size_style>`` name
+        :rtype: str
+        """
+        return "%s_%s" % (heading_style, size_style)
+
     def _get_html_text_escape(self, text):
         """Escape XML special characters and collapse whitespace.
+
+        Also breaks up any unbroken run of ``_LONG_RUN_CHUNK`` or more
+        non-whitespace characters (see ``_break_long_runs``) before
+        escaping -- done here, ahead of the ``&``/``<``/``>``
+        replacements below, so the inserted zero-width spaces never
+        land inside a multi-character XML entity like ``&amp;`` and
+        split it.
 
         :param text: raw text extracted from an HTML text node
         :return: text safe to place inside ODF ``text:p`` content
         :rtype: str
         """
         collapsed = re.sub(r"\s+", " ", text)
+        collapsed = self._break_long_runs(collapsed)
         collapsed = collapsed.replace("&", "&amp;")
         collapsed = collapsed.replace("<", "&lt;")
         collapsed = collapsed.replace(">", "&gt;")
         return collapsed
 
+    def _break_long_runs(self, text):
+        """Insert zero-width-space wrap points into very long unbroken runs.
+
+        See ``_LONG_RUN_RE``'s comment for why this exists. Every
+        ``_LONG_RUN_CHUNK``-character slice of a matched run is joined
+        back with ``_ZERO_WIDTH_SPACE`` -- invisible in both the ODT
+        and the printed PDF, but a valid word-wrap point, so
+        LibreOffice's normal line-breaking handles the run instead of
+        falling back to character-level forced wrapping.
+
+        :param text: already whitespace-collapsed, not yet
+            XML-escaped (see ``_get_html_text_escape``)
+        :return: ``text`` with any long run broken up
+        :rtype: str
+        """
+
+        def _insert_breaks(match):
+            """Re-chunk ``match``'s run, joined back by ``_ZERO_WIDTH_SPACE``."""
+            run = match.group(0)
+            chunks = [
+                run[i : i + _LONG_RUN_CHUNK]
+                for i in range(0, len(run), _LONG_RUN_CHUNK)
+            ]
+            return _ZERO_WIDTH_SPACE.join(chunks)
+
+        return _LONG_RUN_RE.sub(_insert_breaks, text)
+
     def _get_html_text_style_flags(self, el):
-        """Detect Bold/Italic/Underline/color flags for one HTML element.
+        """Detect Bold/Italic/Underline/color/size flags for one HTML element.
 
         Combines the semantic tag (``b``/``strong``, ``i``/``em``,
         ``u``) with the ``style`` attribute (``font-weight``,
-        ``font-style``, ``text-decoration``, ``color``) so both
-        sources are honoured, matching the fix requested for this
-        method. Color also recognizes the legacy ``<font color="...">``
-        attribute.
+        ``font-style``, ``text-decoration``, ``color``, ``font-size``)
+        so both sources are honoured, matching the fix requested for
+        this method. Color also recognizes the legacy
+        ``<font color="...">`` attribute.
 
         :param el: ``lxml.html`` element being inspected
-        :return: four-tuple ``(bold, italic, underline, color_style)``,
-            ``color_style`` a pre-registered style name (see
-            ``_get_html_text_color_style``) or ``None``
+        :return: five-tuple ``(bold, italic, underline, color_style,
+            size_style)``, ``color_style``/``size_style`` a
+            pre-registered style name (see
+            ``_get_html_text_color_style``/``_get_html_text_size_style``)
+            or ``None``
         :rtype: tuple
         """
         tag = el.tag if isinstance(el.tag, str) else ""
@@ -585,7 +849,8 @@ class Py3oReport(models.TransientModel):
         if not underline and re.search(r"text-decoration\s*:\s*underline", style):
             underline = True
         color_style = self._get_html_text_color_style(el, style)
-        return bold, italic, underline, color_style
+        size_style = self._get_html_text_size_style(style)
+        return bold, italic, underline, color_style, size_style
 
     def _get_html_text_color_style(self, el, lowercase_style):
         """Resolve ``el``'s own text color to a pre-registered style name.
@@ -625,15 +890,60 @@ class Py3oReport(models.TransientModel):
             return None
         return "OdooColor_%s" % hex_value
 
+    def _get_html_text_size_style(self, lowercase_style):
+        """Resolve an inline ``font-size`` in ``lowercase_style`` to a style name.
+
+        Unlike color, the returned name isn't drawn from a fixed set:
+        ``_py3o_collect_html_font_sizes`` already scanned the record
+        being printed for every ``font-size`` its Html fields use and
+        ``_py3o_ensure_html_text_styles`` pre-registered exactly those
+        -- so any size this method resolves here is guaranteed to
+        already exist in the template's ``automatic-styles`` by the
+        time ``_get_html_text`` runs.
+
+        :param lowercase_style: an element's ``style`` attribute,
+            already lowercased by the caller
+            (``_get_html_text_style_flags``)
+        :return: an ``OdooFontSize_<n>`` style name, or ``None``
+        :rtype: str or None
+        """
+        match = _FONT_SIZE_RE.search(lowercase_style)
+        if not match:
+            return None
+        pt_value = self._px_or_pt_to_pt(float(match.group(1)), match.group(2))
+        return self._html_font_size_style_name(pt_value)
+
     def _get_html_text_run(
-        self, text, bold, italic, underline, color_style=None, heading_style=None
+        self,
+        text,
+        bold,
+        italic,
+        underline,
+        color_style=None,
+        heading_style=None,
+        size_style=None,
     ):
         """Wrap escaped text in nested ``text:span`` per active style.
 
         Nesting order (innermost first): Underline, Italic, Bold,
-        color, heading -- heading outermost since it is a block-level
-        property of the whole paragraph, not a per-run one like the
-        others.
+        color, heading/size -- heading is normally outermost since it
+        is a block-level property of the whole paragraph, not a
+        per-run one like the others.
+
+        A run both inside a heading *and* carrying its own explicit
+        ``font-size`` is the one case this doesn't nest two spans for:
+        verified empirically against this pipeline's actual
+        LibreOffice conversion, a plain inner ``text:span`` overriding
+        an outer one's ``fo:font-size`` alone is unreliable there
+        (behaves differently depending on the enclosing paragraph's
+        own style, in one observed case losing to the heading's preset
+        size regardless of nesting order). So instead a single
+        *combined* style (see ``_html_heading_size_style_name``,
+        pre-registered by ``_py3o_ensure_html_text_styles``) carries
+        both the override size and the heading's ``Bold`` in one
+        ``text:span``, sidestepping the cascade question entirely.
+        Color still nests normally, since its cascade (inner overrides
+        outer) was verified to work as expected.
 
         :param text: already XML-escaped text
         :param bold: whether the ``Bold`` style applies
@@ -644,6 +954,9 @@ class Py3oReport(models.TransientModel):
         :param heading_style: pre-registered heading style name
             (``OdooH1``-``OdooH6``) inherited from the enclosing
             block, or ``None`` outside a heading
+        :param size_style: pre-registered ``OdooFontSize_<n>`` style
+            name to apply, or ``None`` (see
+            ``_get_html_text_size_style``)
         :return: ``text`` wrapped in zero or more nested
             ``text:span`` elements, never a new ``text:p``
         :rtype: str
@@ -662,24 +975,44 @@ class Py3oReport(models.TransientModel):
                 color_style,
                 result,
             )
-        if heading_style:
+        if heading_style and size_style:
+            combined_style = self._html_heading_size_style_name(
+                heading_style, size_style
+            )
+            result = '<text:span text:style-name="%s">%s</text:span>' % (
+                combined_style,
+                result,
+            )
+        elif heading_style:
             result = '<text:span text:style-name="%s">%s</text:span>' % (
                 heading_style,
+                result,
+            )
+        elif size_style:
+            result = '<text:span text:style-name="%s">%s</text:span>' % (
+                size_style,
                 result,
             )
         return result
 
     def _get_html_text_inline(
-        self, el, bold, italic, underline, color_style=None, heading_style=None
+        self,
+        el,
+        bold,
+        italic,
+        underline,
+        color_style=None,
+        heading_style=None,
+        size_style=None,
     ):
         """Serialize one element's content as inline ODF markup.
 
         Recurses into children, combining each element's own
-        Bold/Italic/Underline/color with the flags inherited from its
-        ancestors -- a nested element's own color overrides an
-        ancestor's, matching CSS cascade. A ``<br>`` becomes a single
-        ``<text:line-break/>``; a tag outside the supported set falls
-        back to its plain escaped text instead of raising.
+        Bold/Italic/Underline/color/size with the flags inherited from
+        its ancestors -- a nested element's own color/size overrides
+        an ancestor's, matching CSS cascade. A ``<br>`` becomes a
+        single ``<text:line-break/>``; a tag outside the supported set
+        falls back to its plain escaped text instead of raising.
 
         :param el: ``lxml.html`` element whose content is serialized
         :param bold: Bold flag inherited from ancestors
@@ -690,6 +1023,8 @@ class Py3oReport(models.TransientModel):
         :param heading_style: heading style name from the enclosing
             block (constant through the whole recursion, never
             re-derived per element), or ``None``
+        :param size_style: font-size style name inherited from
+            ancestors, or ``None`` (see ``_get_html_text_size_style``)
         :return: inline ODF markup for ``el``'s text, children and
             their tails
         :rtype: str
@@ -699,11 +1034,13 @@ class Py3oReport(models.TransientModel):
             own_italic,
             own_underline,
             own_color,
+            own_size,
         ) = self._get_html_text_style_flags(el)
         bold = bold or own_bold
         italic = italic or own_italic
         underline = underline or own_underline
         color_style = own_color or color_style
+        size_style = own_size or size_style
 
         parts = []
         if el.text:
@@ -715,6 +1052,7 @@ class Py3oReport(models.TransientModel):
                     underline,
                     color_style,
                     heading_style,
+                    size_style,
                 )
             )
         for child in el:
@@ -725,7 +1063,13 @@ class Py3oReport(models.TransientModel):
             else:
                 parts.append(
                     self._get_html_text_inline(
-                        child, bold, italic, underline, color_style, heading_style
+                        child,
+                        bold,
+                        italic,
+                        underline,
+                        color_style,
+                        heading_style,
+                        size_style,
                     )
                 )
             if child.tail:
@@ -737,37 +1081,56 @@ class Py3oReport(models.TransientModel):
                         underline,
                         color_style,
                         heading_style,
+                        size_style,
                     )
                 )
         return "".join(parts)
 
     def _py3o_ensure_html_table_style(self, report_bytes):
-        """Inject the bordered ``table-cell`` style used by HTML tables.
+        """Inject the automatic styles ``_get_html_text_table``/``_list`` use.
 
         ``_get_html_text_table`` references
         ``table:style-name="OdooHtmlTableCell"`` on every cell it
-        emits, but that style cannot already exist in the source ODT
-        template -- the table itself is only built at render time, so
-        no template author could have created a matching
-        ``style:style`` for it. This adds that one style to the
-        report's ``content.xml`` ``<office:automatic-styles>`` before
-        py3o ever sees the template, using the same "rewrite the ODT
-        zip in memory" technique already used by
-        ``_py3o_merge_base_template`` for the letterhead. Idempotent:
-        a report whose ``content.xml`` already defines a style of that
-        name (e.g. a second call for the same template) is left
-        untouched.
+        emits and ``text:style-name="OdooHtmlTableText"`` on every
+        cell's ``<text:p>``; ``_get_html_text_list`` references
+        ``text:style-name="OdooListItem"`` on every ``<li>``'s own
+        ``<text:p>`` and ``text:style-name="OdooOL"``/``"OdooUL"`` on
+        the ``<text:list>`` wrapping a run of them. None of the four
+        can already exist in the source ODT template -- tables and
+        lists are only built at render time, so no template author
+        could have created a matching style for any of them. This adds
+        all four to the report's ``content.xml``
+        ``<office:automatic-styles>`` before py3o ever sees the
+        template, using the same "rewrite the ODT zip in memory"
+        technique already used by ``_py3o_merge_base_template`` for
+        the letterhead. Idempotent per style (a style already present
+        by name is left untouched).
+
+        The table paragraph style exists because an unstyled
+        ``<text:p>`` falls back to the document's *global default*
+        paragraph style -- 12pt in a typical Writer document -- which
+        reads as visibly oversized next to the report's own body text
+        (usually rendered a good deal smaller through automatic
+        per-placeholder character styles, not through any named
+        paragraph style this method could instead just point at); the
+        ``OdooListItem`` paragraph style exists for the same reason.
+        ``OdooOL``/``OdooUL`` (built by ``_py3o_append_list_style``)
+        instead give a wrapped continuation line its hanging indent,
+        computed by the renderer against the marker it generates --
+        see ``_HTML_LIST_ITEM_INDENT``'s comment for why that beats
+        this module guessing a fixed indent itself.
 
         Failure is non-fatal: any malformed/unreadable template is
         returned unchanged rather than raising here, since a missing
-        border is far less disruptive than an unprintable report --
-        ``_get_html_text_table``'s cells simply render without a
-        visible border in that case (same as before this method
+        border, oversized cell text, or missing hanging indent is far
+        less disruptive than an unprintable report -- the affected
+        elements simply render without that refinement in that case
+        (same as before this method, or the relevant part of it,
         existed).
 
         :param report_bytes: raw ODT template bytes, before py3o's
             own base-template (letterhead) merge and rendering
-        :return: ``report_bytes``, with the style added to
+        :return: ``report_bytes``, with the styles added to
             ``content.xml``
         :rtype: bytes
         """
@@ -780,23 +1143,69 @@ class Py3oReport(models.TransientModel):
         auto_styles = content_root.find(_clark("office", "automatic-styles"))
         if auto_styles is None:
             return report_bytes
-        if (
-            self._find_style_by_name(auto_styles, _HTML_TABLE_CELL_STYLE_NAME)
-            is not None
-        ):
-            return report_bytes
 
-        style = etree.SubElement(auto_styles, _clark("style", "style"))
-        style.set(_clark("style", "name"), _HTML_TABLE_CELL_STYLE_NAME)
-        style.set(_clark("style", "family"), "table-cell")
-        props = etree.SubElement(style, _clark("style", "table-cell-properties"))
-        # Explicit per-side longhand, not the fo:border shorthand: some ODF
-        # consumers render the shorthand inconsistently on table cells, and
-        # the source HTML this method exists to approximate already uses the
-        # same per-side form (border-top/-bottom/-left/-right).
-        for side in ("top", "bottom", "left", "right"):
-            props.set(_clark("fo", "border-%s" % side), "1pt solid #000000")
-        props.set(_clark("fo", "padding"), "0.05in")
+        changed = False
+        if self._find_style_by_name(auto_styles, _HTML_TABLE_CELL_STYLE_NAME) is None:
+            style = etree.SubElement(auto_styles, _clark("style", "style"))
+            style.set(_clark("style", "name"), _HTML_TABLE_CELL_STYLE_NAME)
+            style.set(_clark("style", "family"), "table-cell")
+            props = etree.SubElement(style, _clark("style", "table-cell-properties"))
+            # Explicit per-side longhand, not the fo:border shorthand: some
+            # ODF consumers render the shorthand inconsistently on table
+            # cells, and the source HTML this method exists to approximate
+            # already uses the same per-side form (border-top/-bottom/-left/
+            # -right).
+            for side in ("top", "bottom", "left", "right"):
+                props.set(_clark("fo", "border-%s" % side), _HTML_TABLE_CELL_BORDER)
+            props.set(_clark("fo", "padding"), "0.05in")
+            changed = True
+
+        if self._find_style_by_name(auto_styles, _HTML_TABLE_TEXT_STYLE_NAME) is None:
+            style = etree.SubElement(auto_styles, _clark("style", "style"))
+            style.set(_clark("style", "name"), _HTML_TABLE_TEXT_STYLE_NAME)
+            style.set(_clark("style", "family"), "paragraph")
+            props = etree.SubElement(style, _clark("style", "text-properties"))
+            props.set(_clark("fo", "font-size"), _HTML_TABLE_TEXT_FONT_SIZE)
+            changed = True
+
+        if self._find_style_by_name(auto_styles, _HTML_LIST_ITEM_STYLE_NAME) is None:
+            style = etree.SubElement(auto_styles, _clark("style", "style"))
+            style.set(_clark("style", "name"), _HTML_LIST_ITEM_STYLE_NAME)
+            style.set(_clark("style", "family"), "paragraph")
+            # Same reasoning as OdooHtmlTableText above: this is a brand new
+            # paragraph, not the placeholder's own, so it needs its own
+            # explicit font-size or it falls back to the oversized document
+            # default. No margin-left/text-indent here (unlike
+            # OdooHtmlTableText) -- the hang indent comes from the
+            # OdooOL/OdooUL list styles below instead, computed against the
+            # marker they generate rather than guessed.
+            text_props = etree.SubElement(style, _clark("style", "text-properties"))
+            text_props.set(_clark("fo", "font-size"), _HTML_TABLE_TEXT_FONT_SIZE)
+            changed = True
+
+        if self._find_style_by_name(auto_styles, _HTML_LIST_OL_STYLE_NAME) is None:
+            self._py3o_append_list_style(
+                auto_styles,
+                _HTML_LIST_OL_STYLE_NAME,
+                "number",
+                {
+                    _clark("style", "num-format"): "1",
+                    _clark("style", "num-suffix"): ". ",
+                },
+            )
+            changed = True
+
+        if self._find_style_by_name(auto_styles, _HTML_LIST_UL_STYLE_NAME) is None:
+            self._py3o_append_list_style(
+                auto_styles,
+                _HTML_LIST_UL_STYLE_NAME,
+                "bullet",
+                {_clark("text", "bullet-char"): "•"},
+            )
+            changed = True
+
+        if not changed:
+            return report_bytes
 
         new_zip_entries = {
             "content.xml": etree.tostring(
@@ -805,32 +1214,98 @@ class Py3oReport(models.TransientModel):
         }
         return self._py3o_write_merged_zip(report_zip_in, new_zip_entries)
 
-    def _py3o_ensure_html_text_styles(self, report_bytes):
-        """Inject the heading-size and text-color styles ``get_html_text`` uses.
+    def _py3o_append_list_style(self, auto_styles, style_name, level_kind, level_attrs):
+        """Append one single-level ``<text:list-style>`` to ``auto_styles``.
+
+        Builds the ``OdooOL``/``OdooUL`` styles ``_py3o_ensure_html_table_style``
+        injects and ``_get_html_text_list`` references: one
+        ``<text:list-level-style-number>`` or ``<text:list-level-style-bullet>``
+        (picked by ``level_kind``, ``"number"``/``"bullet"``), carrying
+        ``level_attrs`` (the number format/suffix, or the bullet character)
+        plus a shared ``style:list-level-label-alignment`` -- this is what
+        lets the renderer itself compute a wrapped continuation line's hang
+        indent against the marker it generates, rather than this module
+        guessing a fixed one (see ``_HTML_LIST_ITEM_INDENT``'s comment).
+        HTML only nests to a second ``<ul>``/``<ol>`` level via a fresh,
+        independent ``_get_html_text_list`` call (see its docstring -- a
+        nested list under a non-``<li>`` child flushes and is walked as its
+        own block), so a single level here already covers every list this
+        module renders.
+
+        :param auto_styles: the template's ``<office:automatic-styles>``
+            element, mutated in place
+        :param style_name: ``OdooOL`` or ``OdooUL``
+        :param level_kind: ``"number"`` or ``"bullet"`` -- which
+            ``text:list-level-style-*`` element to create
+        :param level_attrs: attributes (already Clark-notation keys, see
+            ``_clark``) to set on that level element
+        :return: None
+        """
+        list_style = etree.SubElement(auto_styles, _clark("text", "list-style"))
+        list_style.set(_clark("style", "name"), style_name)
+        level = etree.SubElement(
+            list_style, _clark("text", "list-level-style-%s" % level_kind)
+        )
+        level.set(_clark("text", "level"), "1")
+        for attr, value in level_attrs.items():
+            level.set(attr, value)
+        level_props = etree.SubElement(level, _clark("style", "list-level-properties"))
+        level_props.set(
+            _clark("text", "list-level-position-and-space-mode"), "label-alignment"
+        )
+        alignment = etree.SubElement(
+            level_props, _clark("style", "list-level-label-alignment")
+        )
+        alignment.set(_clark("text", "label-followed-by"), "listtab")
+        alignment.set(_clark("text", "list-tab-stop-position"), _HTML_LIST_ITEM_INDENT)
+        alignment.set(_clark("fo", "text-indent"), "-%s" % _HTML_LIST_MARKER_OVERHANG)
+        alignment.set(_clark("fo", "margin-left"), _HTML_LIST_ITEM_INDENT)
+
+    def _py3o_ensure_html_text_styles(
+        self, report_bytes, plain_sizes=(), heading_sizes=()
+    ):
+        """Inject the heading/color/font-size styles ``get_html_text`` uses.
 
         Same constraint and technique as
-        ``_py3o_ensure_html_table_style`` (see its docstring): neither
-        an ``<h1>``-``<h6>`` font-size style nor a ``style="color:
-        ..."`` color style can already exist in the source template,
-        so both are added to ``content.xml``'s
+        ``_py3o_ensure_html_table_style`` (see its docstring): none of
+        an ``<h1>``-``<h6>`` font-size style, a ``style="color: ..."``
+        color style, a standalone inline ``font-size`` style, or a
+        combined heading+size style can already exist in the source
+        template, so all four are added to ``content.xml``'s
         ``<office:automatic-styles>`` here, before py3o ever sees the
         template. Idempotent per style (a style already present by
         name is left untouched); unlike the table-cell style this
-        injects up to 22 styles (6 headings + 16 colors) in one pass,
-        skipping only individual names that already exist.
+        injects up to ``22 + len(plain_sizes) + len(heading_sizes)``
+        styles (6 headings + 16 colors + one per size
+        ``_py3o_collect_html_font_sizes`` found, standalone or
+        heading-paired) in one pass, skipping only individual names
+        that already exist.
 
         Colors are deliberately bounded to the 16 standard CSS2
         keywords in ``_HTML_COLOR_KEYWORDS`` -- see
         ``_get_html_text_color_style`` for why an arbitrary/unlisted
-        color cannot be supported this way.
+        color cannot be supported this way. Font sizes can't be
+        bounded the same way (an author can type any pixel value), so
+        ``plain_sizes``/``heading_sizes`` instead carry exactly what
+        ``_py3o_collect_html_font_sizes`` found by scanning the record
+        actually being printed. The heading-paired styles set BOTH
+        ``fo:font-size`` and ``fo:font-weight="bold"`` in one style --
+        see ``_get_html_text_run`` for why a heading override can't
+        just nest two separate styles the way color does.
 
         Failure is non-fatal, same reasoning as the table-cell style:
         a malformed/unreadable template is returned unchanged rather
-        than raising, since missing heading sizes/colors are far less
-        disruptive than an unprintable report.
+        than raising, since missing heading sizes/colors/font-sizes
+        are far less disruptive than an unprintable report.
 
         :param report_bytes: raw ODT template bytes, before py3o's
             own base-template (letterhead) merge and rendering
+        :param plain_sizes: standalone (non-heading) point sizes to
+            pre-register (see
+            ``_py3o_collect_html_font_sizes``/``_px_or_pt_to_pt``)
+        :param heading_sizes: ``(heading_style_name, pt_value)`` pairs
+            to pre-register as combined styles (see
+            ``_py3o_collect_html_font_sizes``)
         :return: ``report_bytes``, with the styles added to
             ``content.xml``
         :rtype: bytes
@@ -866,6 +1341,30 @@ class Py3oReport(models.TransientModel):
             style.set(_clark("style", "family"), "text")
             props = etree.SubElement(style, _clark("style", "text-properties"))
             props.set(_clark("fo", "color"), "#%s" % hex_value)
+            changed = True
+
+        for pt_value in plain_sizes:
+            style_name = self._html_font_size_style_name(pt_value)
+            if self._find_style_by_name(auto_styles, style_name) is not None:
+                continue
+            style = etree.SubElement(auto_styles, _clark("style", "style"))
+            style.set(_clark("style", "name"), style_name)
+            style.set(_clark("style", "family"), "text")
+            props = etree.SubElement(style, _clark("style", "text-properties"))
+            props.set(_clark("fo", "font-size"), "%spt" % ("%g" % pt_value))
+            changed = True
+
+        for heading_style, pt_value in heading_sizes:
+            size_style = self._html_font_size_style_name(pt_value)
+            style_name = self._html_heading_size_style_name(heading_style, size_style)
+            if self._find_style_by_name(auto_styles, style_name) is not None:
+                continue
+            style = etree.SubElement(auto_styles, _clark("style", "style"))
+            style.set(_clark("style", "name"), style_name)
+            style.set(_clark("style", "family"), "text")
+            props = etree.SubElement(style, _clark("style", "text-properties"))
+            props.set(_clark("fo", "font-size"), "%spt" % ("%g" % pt_value))
+            props.set(_clark("fo", "font-weight"), "bold")
             changed = True
 
         if not changed:
@@ -906,7 +1405,7 @@ class Py3oReport(models.TransientModel):
         §5.1.2); verified empirically end-to-end through the real
         py3o + LibreOffice 6.1 pipeline, not just a hand-built ODT.
 
-        Cells reference the ``OdooHtmlTableCell`` style (1pt border +
+        Cells reference the ``OdooHtmlTableCell`` style (thin border +
         padding) for a visible grid -- see
         ``_py3o_ensure_html_table_style``, which injects that style
         into the template at render time since no source template
@@ -960,8 +1459,8 @@ class Py3oReport(models.TransientModel):
                 row_parts.append(
                     '<table:table-cell table:style-name="%s" '
                     'office:value-type="string">'
-                    "<text:p>%s</text:p></table:table-cell>"
-                    % (_HTML_TABLE_CELL_STYLE_NAME, text)
+                    '<text:p text:style-name="%s">%s</text:p></table:table-cell>'
+                    % (_HTML_TABLE_CELL_STYLE_NAME, _HTML_TABLE_TEXT_STYLE_NAME, text)
                 )
             row_parts.append("</table:table-row>")
             return "".join(row_parts)
@@ -976,51 +1475,86 @@ class Py3oReport(models.TransientModel):
             parts.append("</table:table-header-rows>")
         parts.extend(_row_xml(cells) for is_header, cells in rows if not is_header)
         parts.append("</table:table>")
-        return "</text:span></text:p>%s<text:p><text:span>" % "".join(parts)
+        return "%s%s%s" % (
+            _ESCAPE_BLOCK_PREFIX,
+            "".join(parts),
+            _ESCAPE_BLOCK_SUFFIX,
+        )
 
     def _get_html_text_list(self, tag, el, blocks):
-        """Render one ``<ul>``/``<ol>``'s ``<li>`` children as blocks.
+        """Render one ``<ul>``/``<ol>``'s ``<li>`` children as one block.
 
         Split out of ``_get_html_text_blocks`` (see its docstring)
         purely to keep that method's branching under the repo's
-        flake8 ``max-complexity``; behaviour is unchanged. Each
-        ``<li>`` becomes its own entry of ``blocks``, prefixed with a
-        bullet (``ul``) or a number (``ol``); a non-``<li>`` child
-        (e.g. a nested ``<ul>``) is walked back through
-        ``_get_html_text_blocks`` instead.
+        flake8 ``max-complexity``.
+
+        Every ``<li>`` becomes a genuine ``<text:list-item>`` (its
+        marker -- a bullet for ``ul``, an auto-incrementing number for
+        ``ol`` -- generated by the renderer from the ``OdooUL``/
+        ``OdooOL`` list style, not written into the text here) holding
+        its own ``<text:p>`` styled ``OdooListItem``; a run of
+        consecutive ``<li>``\\ s becomes one shared ``<text:list>``.
+        That list is batched into the same close-current-paragraph/
+        emit/reopen escape ``_get_html_text_table`` already uses for
+        ``<table>`` (batched per run of ``<li>``\\ s, not one escape
+        per item, so joining blocks with ``<text:line-break/>`` -- see
+        ``_get_html_text`` -- does not inject a stray blank paragraph
+        between every pair of items). A non-``<li>`` child (e.g. a
+        nested ``<ul>`` directly under this one, not wrapped in an
+        ``<li>`` -- malformed HTML, but seen from copy-pasted content)
+        flushes the batch so far and is walked back through
+        ``_get_html_text_blocks`` instead, to keep document order
+        correct.
 
         :param tag: ``"ul"`` or ``"ol"``, the list's own tag
         :param el: the ``<ul>``/``<ol>`` element being walked
-        :param blocks: list mutated in place, one string per block
+        :param blocks: list mutated in place, one entry per batch of
+            consecutive ``<li>``\\ s or per non-``<li>`` child
         :return: None
         """
-        index = 0
+        items = []
+
+        def _flush():
+            """Emit the accumulated ``items`` as one ``<text:list>`` block."""
+            if items:
+                blocks.append(
+                    '%s<text:list text:style-name="%s">%s</text:list>%s'
+                    % (
+                        _ESCAPE_BLOCK_PREFIX,
+                        _HTML_LIST_STYLE_NAMES[tag],
+                        "".join(items),
+                        _ESCAPE_BLOCK_SUFFIX,
+                    )
+                )
+                items.clear()
+
         for child in el:
             if not isinstance(child.tag, str):
                 continue
             if child.tag == "li":
-                index += 1
-                prefix = "%d. " % index if tag == "ol" else "• "
-                indent = '<text:s text:c="3"/>'
-                blocks.append(
-                    indent
-                    + prefix
-                    + self._get_html_text_inline(child, False, False, False)
+                content = self._get_html_text_inline(child, False, False, False)
+                items.append(
+                    "<text:list-item>"
+                    '<text:p text:style-name="%s">%s</text:p>'
+                    "</text:list-item>" % (_HTML_LIST_ITEM_STYLE_NAME, content)
                 )
             else:
+                _flush()
                 self._get_html_text_blocks(child, blocks)
+        _flush()
 
     def _get_html_text_blocks(self, el, blocks):
         """Collect one ODF block string per block-level HTML element.
 
-        ``p``/``h1``-``h6``/``li`` each become one entry of
-        ``blocks``; ``hr`` contributes an empty entry (rendered as a
-        blank separator line by the caller); ``ul``/``ol`` are
-        unwrapped so each ``li`` still becomes its own entry, prefixed
-        with a bullet (``ul``) or a number (``ol``); ``table`` becomes
-        one entry rendered by ``_get_html_text_table``. Bare
-        text/inline content with no wrapping block tag is kept in a
-        single shared entry.
+        ``p``/``h1``-``h6`` each become one entry of ``blocks``; ``hr``
+        contributes an empty entry (rendered as a blank separator line
+        by the caller); ``ul``/``ol`` are handled by
+        ``_get_html_text_list``, which batches each run of consecutive
+        ``<li>``\\ s (prefixed with a bullet for ``ul``, a number for
+        ``ol``) into one entry of its own, each ``<li>`` its own
+        hanging-indented ``<text:p>``; ``table`` becomes one entry
+        rendered by ``_get_html_text_table``. Bare text/inline content
+        with no wrapping block tag is kept in a single shared entry.
 
         A ``p``/heading with no visible text and no ``<br>`` (e.g. a
         stray whitespace-only paragraph left over from pasting into
@@ -1100,19 +1634,28 @@ class Py3oReport(models.TransientModel):
         ``i``/``em``, ``u``) and the ``style`` attribute. Tags outside
         that set fall back to plain text instead of raising.
 
-        Every construct except ``table`` stays entirely inside that
-        one ``<text:p>`` (never opens a new one). ``table`` is the
-        one exception: it closes that paragraph, emits a real
-        ``<table:table>``, and reopens an empty paragraph for
+        Most constructs stay entirely inside that one ``<text:p>``
+        (never open a new one). ``table`` and a batch of ``<li>``\\ s
+        (see ``_get_html_text_list``) are the exceptions: each closes
+        that paragraph, emits real ``<table:table>``/hang-indented
+        ``<text:p>`` elements, and reopens an empty paragraph for
         whatever follows -- see ``_get_html_text_table`` for why that
-        is safe here.
+        is safe here. Such a block is recognizable by starting with
+        ``</text:span></text:p>`` and/or ending with
+        ``<text:p><text:span>``.
 
-        Blocks are joined by a single ``<text:line-break/>`` -- one
-        new line per source paragraph, matching normal paragraph
-        flow. A deliberate blank line between two paragraphs is
-        therefore carried entirely by the source's own ``<p><br></p>``
-        (rendered as its own block, see ``_get_html_text_blocks``),
-        not added again here.
+        Ordinary blocks are joined by a single ``<text:line-break/>``
+        -- one new line per source paragraph, matching normal
+        paragraph flow. A deliberate blank line between two paragraphs
+        is therefore carried entirely by the source's own
+        ``<p><br></p>`` (rendered as its own block, see
+        ``_get_html_text_blocks``), not added again here. A join
+        touching a table/list block skips that
+        ``<text:line-break/>`` instead: that block already opens and
+        closes its own paragraph(s) cleanly, and joining it the
+        ordinary way would strand a line-break either right before a
+        ``</text:p>`` or right after a ``<text:p>`` -- both render as
+        an unwanted extra blank line.
 
         :param html_value: raw HTML string from an Odoo ``Html`` field
         :return: markup safe to insert as-is in the ODT template
@@ -1123,7 +1666,29 @@ class Py3oReport(models.TransientModel):
         root = html.fragment_fromstring(html_value, create_parent="div")
         blocks = []
         self._get_html_text_blocks(root, blocks)
-        return Markup("<text:line-break/>".join(blocks))
+        return Markup(self._join_html_text_blocks(blocks))
+
+    def _join_html_text_blocks(self, blocks):
+        """Join ``blocks`` with ``<text:line-break/>``, skipping escaped joins.
+
+        See ``_get_html_text``'s docstring for why a join next to a
+        table/list block (one starting with ``</text:span></text:p>``
+        or ending with ``<text:p><text:span>``) must not add a
+        ``<text:line-break/>``.
+
+        :param blocks: block strings from ``_get_html_text_blocks``
+        :return: the blocks joined into one string
+        :rtype: str
+        """
+        parts = []
+        for index, block in enumerate(blocks):
+            if index > 0:
+                prev_is_escaped = blocks[index - 1].endswith(_ESCAPE_BLOCK_SUFFIX)
+                this_is_escaped = block.startswith(_ESCAPE_BLOCK_PREFIX)
+                if not prev_is_escaped and not this_is_escaped:
+                    parts.append("<text:line-break/>")
+            parts.append(block)
+        return "".join(parts)
 
     @api.model
     def load_from_file(self, path, key):
