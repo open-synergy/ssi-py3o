@@ -659,3 +659,86 @@ class TestHtmlText(YamlTransactionCase):
             )
         )
         self.assertTrue(result.endswith("</text:p><text:p><text:span>polos"))
+
+    # -- CSS property names must match whole, not as a suffix ---------------
+
+    def test_prefixed_css_properties_are_ignored(self):
+        """Ignore Word/other properties that merely end like a known one.
+
+        ``mso-bidi-font-weight:bold`` is not ``font-weight``,
+        ``background-color`` is not ``color``, and so on: none of them
+        may produce Bold, Italic, Underline, a color or a font size.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        prefixed = [
+            "mso-bidi-font-weight:bold",
+            "mso-bidi-font-style:italic",
+            "mso-bidi-text-decoration:underline",
+            "background-color: red",
+            "border-color: red",
+            "mso-ansi-font-size:20pt",
+        ]
+        for declaration in prefixed:
+            with self.subTest(declaration=declaration):
+                result = str(
+                    self.engine._get_html_text(
+                        '<p><span style="%s">x</span></p>' % declaration
+                    )
+                )
+                self.assertNotIn("Bold", result)
+                self.assertNotIn("Italic", result)
+                self.assertNotIn("Underline", result)
+                self.assertNotIn("OdooColor_", result)
+                self.assertNotIn("OdooFontSize_", result)
+
+    def test_valid_css_property_beside_prefixed_one(self):
+        """Keep reading a real declaration written next to a prefixed one.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        not_bold = str(
+            self.engine._get_html_text(
+                '<p><span style="mso-bidi-font-weight:bold; '
+                'font-weight: normal">x</span></p>'
+            )
+        )
+        self.assertNotIn("Bold", not_bold)
+        bold = str(
+            self.engine._get_html_text(
+                '<p><span style="mso-fareast-font-family:SimSun; '
+                'font-weight: bold">x</span></p>'
+            )
+        )
+        self.assertIn('text:style-name="Bold"', bold)
+        mixed = str(
+            self.engine._get_html_text(
+                '<p><span style="background-color: blue; color: red; '
+                'mso-ansi-font-size:20pt; font-size: 14px">x</span></p>'
+            )
+        )
+        self.assertIn("OdooColor_ff0000", mixed)
+        self.assertNotIn("OdooColor_0000ff", mixed)
+        self.assertIn("OdooFontSize_10_5", mixed)
+        self.assertNotIn("OdooFontSize_20", mixed)
+
+    def test_css_property_recognised_at_start_after_space_and_semicolon(self):
+        """Recognise a property at the start, after a space and after ``;``.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        for style in (
+            "font-weight:bold",
+            "margin: 0; font-weight:bold",
+            "margin: 0;font-weight:bold",
+        ):
+            with self.subTest(style=style):
+                result = str(
+                    self.engine._get_html_text(
+                        '<p><span style="%s">x</span></p>' % style
+                    )
+                )
+                self.assertIn('text:style-name="Bold"', result)

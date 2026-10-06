@@ -106,12 +106,17 @@ _ODF_TAG_RE = re.compile(r"<[^>]+>")
 _ESCAPE_BLOCK_PREFIX = "</text:span></text:p>"
 _ESCAPE_BLOCK_SUFFIX = "<text:p><text:span>"
 
+# A CSS property name only counts when nothing that could extend it sits right
+# before it: a plain `font-weight` declaration must not match inside Word's
+# `mso-bidi-font-weight`, nor `color` inside `background-color`/`border-color`,
+# nor `font-size` inside `mso-ansi-font-size`. Used by every style lookup below.
+_CSS_PROP_START = r"(?<![\w-])"
 # Matches an inline `style="...font-size: <n><px|pt>..."` declaration -- see
 # Py3oReport._get_html_text_size_style(). Only px/pt are recognized (what the
 # Odoo Html editor emits); other units (em, %, ...) are left unsupported
 # rather than guessed at, same "documented limitation" posture as an
 # unlisted color in _get_html_text_color_style().
-_FONT_SIZE_RE = re.compile(r"font-size\s*:\s*([\d.]+)\s*(px|pt)")
+_FONT_SIZE_RE = re.compile(_CSS_PROP_START + r"font-size\s*:\s*([\d.]+)\s*(px|pt)")
 
 # A run of non-whitespace this long or longer (e.g. a pasted string with no
 # spaces) has no natural word-wrap point, forcing LibreOffice's PDF export
@@ -908,16 +913,20 @@ class Py3oReport(models.TransientModel):
         underline = tag in _HTML_ODF_UNDERLINE_TAGS
         style = (el.get("style") or "").lower()
         if not bold:
-            match = re.search(r"font-weight\s*:\s*([a-z0-9]+)", style)
+            match = re.search(_CSS_PROP_START + r"font-weight\s*:\s*([a-z0-9]+)", style)
             if match:
                 value = match.group(1)
                 if value in ("bold", "bolder"):
                     bold = True
                 elif value.isdigit() and int(value) >= 600:
                     bold = True
-        if not italic and re.search(r"font-style\s*:\s*italic", style):
+        if not italic and re.search(
+            _CSS_PROP_START + r"font-style\s*:\s*italic", style
+        ):
             italic = True
-        if not underline and re.search(r"text-decoration\s*:\s*underline", style):
+        if not underline and re.search(
+            _CSS_PROP_START + r"text-decoration\s*:\s*underline", style
+        ):
             underline = True
         color_style = self._get_html_text_color_style(el, style)
         size_style = self._get_html_text_size_style(style)
@@ -941,7 +950,7 @@ class Py3oReport(models.TransientModel):
         :rtype: str or None
         """
         raw = None
-        match = re.search(r"color\s*:\s*([^;]+)", lowercase_style)
+        match = re.search(_CSS_PROP_START + r"color\s*:\s*([^;]+)", lowercase_style)
         if match:
             raw = match.group(1).strip()
         elif el.tag == "font" and el.get("color"):
