@@ -658,3 +658,111 @@ class TestOdfMerge(TransactionCase):
                 "py3o_template_id": template.id,
             }
         )
+
+    # -- _py3o_ensure_html_align_styles() --------------------------------------
+
+    def _placeholder_odt(self, wrapper_style="P7"):
+        """Build a template with one ``get_html_text`` placeholder.
+
+        The placeholder sits in a paragraph styled ``wrapper_style``,
+        an automatic style with a font size and a top margin.
+        """
+        auto_styles = (
+            '<style:style style:name="%s" style:family="paragraph" '
+            'style:parent-style-name="Standard">'
+            '<style:paragraph-properties fo:margin-top="0.06in" '
+            'fo:break-before="page" style:master-page-name="Standard"/>'
+            '<style:text-properties fo:font-size="10pt"/>'
+            "</style:style>"
+        ) % wrapper_style
+        body = (
+            '<text:p text:style-name="%s"><text:text-input '
+            'text:description="py3o://function=&quot;get_html_text(o.opinion)'
+            '&quot;">opinion</text:text-input></text:p>'
+        ) % wrapper_style
+        return content_odt(auto_styles, body)
+
+    def test_html_align_styles_injected(self):
+        """Add four alignment styles per wrapper style, plus generic ones.
+
+        The wrapper style's own properties (font size, margin) are
+        kept, page-break attributes are dropped, only ``fo:text-align``
+        differs, and the placeholder call gains ``base_style``.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_align_styles(self._placeholder_odt())
+        root = self._content_of(result)
+        auto_styles = root.find(_q("office", "automatic-styles"))
+        by_name = {c.get(_q("style", "name")): c for c in auto_styles}
+        for odf_align in ("Start", "Center", "End", "Justify"):
+            self.assertIn("OdooHtmlAlign%s" % odf_align, by_name)
+            self.assertIn("OdooHtmlAlign%s_P7" % odf_align, by_name)
+        justify = by_name["OdooHtmlAlignJustify_P7"]
+        para = justify.find(_q("style", "paragraph-properties"))
+        self.assertEqual(para.get(_q("fo", "text-align")), "justify")
+        self.assertEqual(para.get(_q("fo", "margin-top")), "0.06in")
+        self.assertIsNone(para.get(_q("fo", "break-before")))
+        self.assertIsNone(justify.get(_q("style", "master-page-name")))
+        self.assertEqual(justify.get(_q("style", "parent-style-name")), "Standard")
+        self.assertEqual(
+            justify.find(_q("style", "text-properties")).get(_q("fo", "font-size")),
+            "10pt",
+        )
+        text_input = next(root.iter(_q("text", "text-input")))
+        self.assertEqual(
+            text_input.get(_q("text", "description")),
+            "py3o://function=\"get_html_text(o.opinion, base_style='P7')\"",
+        )
+
+    def test_html_align_styles_use_common_style_as_parent(self):
+        """Parent the new style on a wrapper style that is a common style.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        source = content_odt(
+            "",
+            '<text:p text:style-name="Standard"><text:text-input '
+            'text:description="py3o://function=&quot;get_html_text(o.a)'
+            '&quot;">a</text:text-input></text:p>',
+        )
+        result = self.engine._py3o_ensure_html_align_styles(source)
+        auto_styles = self._content_of(result).find(_q("office", "automatic-styles"))
+        style = next(
+            c
+            for c in auto_styles
+            if c.get(_q("style", "name")) == "OdooHtmlAlignCenter_Standard"
+        )
+        self.assertEqual(style.get(_q("style", "parent-style-name")), "Standard")
+
+    def test_html_align_styles_idempotent(self):
+        """Inject the styles once, and the placeholder rewrite only once.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        once = self.engine._py3o_ensure_html_align_styles(self._placeholder_odt())
+        twice = self.engine._py3o_ensure_html_align_styles(once)
+        names = [
+            c.get(_q("style", "name"))
+            for c in self._content_of(twice).find(_q("office", "automatic-styles"))
+        ]
+        self.assertEqual(len(names), len(set(names)))
+        description = next(self._content_of(twice).iter(_q("text", "text-input"))).get(
+            _q("text", "description")
+        )
+        self.assertEqual(description.count("base_style"), 1)
+
+    def test_html_align_styles_skip_template_without_placeholder(self):
+        """Return a template with no ``get_html_text`` placeholder unchanged.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        source = content_odt()
+        self.assertEqual(self.engine._py3o_ensure_html_align_styles(source), source)
+        self.assertEqual(
+            self.engine._py3o_ensure_html_align_styles(b"not a zip"), b"not a zip"
+        )

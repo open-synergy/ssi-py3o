@@ -184,6 +184,43 @@ _HTML_LIST_ITEM_INDENT = "0.5in"
 # a bit left of the indented text block rather than at the very edge.
 _HTML_LIST_MARKER_OVERHANG = "0.2in"
 
+# Paragraph alignment (HTML text-align / align) -> ODF fo:text-align. An
+# aligned <p>/<h1>-<h6> cannot stay inside the placeholder's shared
+# <text:p>: alignment is a paragraph property, and a manual
+# <text:line-break/> inside a justified paragraph makes LibreOffice stretch
+# the line it ends. _get_html_text_aligned_block() therefore emits each
+# such block as its own <text:p> (the same close/reopen escape tables and
+# lists use), styled with one of the automatic styles named by
+# _html_align_style_name() and injected by _py3o_ensure_html_align_styles().
+_HTML_ALIGN_VALUES = {
+    "left": "start",
+    "start": "start",
+    "right": "end",
+    "end": "end",
+    "center": "center",
+    "justify": "justify",
+}
+_HTML_ALIGN_STYLE_PREFIX = "OdooHtmlAlign"
+_HTML_ALIGN_ODF_KEYS = ("start", "center", "end", "justify")
+# The block tags whose own text-align is honoured (<li> is excluded: its
+# alignment is part of the list rendering, not of a paragraph of its own).
+_HTML_ALIGN_BLOCK_TAGS = ("p", "h1", "h2", "h3", "h4", "h5", "h6")
+_HTML_ALIGN_STYLE_RE = re.compile(
+    r"text-align\s*:\s*(left|right|center|justify|start|end)\b", re.IGNORECASE
+)
+# A template placeholder as written in <text:text-input text:description>:
+# py3o://function="get_html_text(<expr>)". Group 2 is the call's arguments.
+_HTML_TEXT_DESCRIPTION_RE = re.compile(
+    r'^(py3o://function="get_html_text\()(.*)(\)")$', re.DOTALL
+)
+# What an aligned block starts and ends with, see _get_html_text_aligned_block().
+# _ESCAPE_BLOCK_PREFIX/_SUFFIX are defined above, next to the table/list blocks.
+_ALIGN_BLOCK_START = '%s<text:p text:style-name="%s' % (
+    _ESCAPE_BLOCK_PREFIX,
+    _HTML_ALIGN_STYLE_PREFIX,
+)
+_ALIGN_BLOCK_END = "</text:p>%s" % _ESCAPE_BLOCK_SUFFIX
+
 # text (character) automatic styles injected by _py3o_ensure_html_text_styles()
 # for <h1>-<h6> font sizes -- same constraint as the table-cell style above,
 # see that method's docstring. All headings are bold, decreasing in size.
@@ -282,6 +319,7 @@ class Py3oReport(models.TransientModel):
         report_bytes = self._py3o_ensure_html_text_styles(
             report_bytes, plain_sizes, heading_sizes
         )
+        report_bytes = self._py3o_ensure_html_align_styles(report_bytes)
         self._py3o_check_html_fonts(report_bytes)
         report = self.ir_actions_report_id
         base_bytes = report._py3o_get_base_template_data()
@@ -1423,6 +1461,138 @@ class Py3oReport(models.TransientModel):
         }
         return self._py3o_write_merged_zip(report_zip_in, new_zip_entries)
 
+    def _html_align_style_name(self, odf_align, base_style=None):
+        """Return the automatic paragraph style name for an alignment.
+
+        :param odf_align: one of ``_HTML_ALIGN_ODF_KEYS``
+        :param base_style: name of the paragraph style that wraps the
+            template placeholder, or ``None``/empty for the generic
+            alignment-only style
+        :return: style name, e.g. ``OdooHtmlAlignJustify_P7``
+        :rtype: str
+        """
+        name = "%s%s" % (_HTML_ALIGN_STYLE_PREFIX, odf_align.capitalize())
+        if base_style:
+            name = "%s_%s" % (name, base_style)
+        return name
+
+    def _py3o_html_align_style_element(self, auto_styles, odf_align, base_style):
+        """Build the automatic paragraph style for one alignment.
+
+        With ``base_style`` the new style takes over that wrapper
+        paragraph's own look (font, size, margins) and only overrides
+        ``fo:text-align``: an automatic style cannot be the parent of
+        another automatic style, so the properties of an automatic
+        ``base_style`` are copied; a common ``base_style`` (not found
+        among the automatic styles) becomes the parent instead. Page
+        break attributes are dropped from a copy, since each emitted
+        paragraph is only a slice of the placeholder's content.
+
+        :param auto_styles: the ``office:automatic-styles`` element
+        :param odf_align: one of ``_HTML_ALIGN_ODF_KEYS``
+        :param base_style: wrapper paragraph style name, or ``None``
+        :return: the new, not yet attached ``style:style`` element
+        :rtype: lxml element
+        """
+        source = self._find_style_by_name(auto_styles, base_style)
+        if source is not None:
+            style = deepcopy(source)
+            style.attrib.pop(_clark("style", "master-page-name"), None)
+        else:
+            style = etree.Element(_clark("style", "style"))
+            style.set(_clark("style", "family"), "paragraph")
+            if base_style:
+                style.set(_clark("style", "parent-style-name"), base_style)
+        style.set(
+            _clark("style", "name"), self._html_align_style_name(odf_align, base_style)
+        )
+        props = style.find(_clark("style", "paragraph-properties"))
+        if props is None:
+            props = etree.SubElement(style, _clark("style", "paragraph-properties"))
+        for attr in ("break-before", "break-after"):
+            props.attrib.pop(_clark("fo", attr), None)
+        props.set(_clark("fo", "text-align"), odf_align)
+        return style
+
+    def _py3o_ensure_html_align_styles(self, report_bytes):
+        """Inject the paragraph-alignment styles ``get_html_text`` needs.
+
+        Only a template that has at least one ``get_html_text(...)``
+        placeholder is touched; any other template is returned
+        byte-for-byte. For each such placeholder this finds the
+        paragraph it sits in, adds ``base_style='<that paragraph's
+        style>'`` to the call so ``_get_html_text`` can pick styles
+        that keep the paragraph's font and margins (see
+        ``_py3o_html_align_style_element``), and registers one style
+        per alignment for every distinct wrapper style, plus the four
+        generic alignment-only styles used when no wrapper style is
+        known. Idempotent per style name, and a placeholder that
+        already passes ``base_style`` is left alone.
+
+        Failure is non-fatal, like the other ``_py3o_ensure_*``
+        methods: an unreadable template is returned unchanged.
+
+        :param report_bytes: raw ODT template bytes
+        :return: ``report_bytes``, with the alignment styles added
+        :rtype: bytes
+        """
+        try:
+            report_zip_in = ZipFile(BytesIO(report_bytes))
+            content_root = etree.fromstring(report_zip_in.read("content.xml"))
+        except (BadZipFile, KeyError, etree.XMLSyntaxError):
+            return report_bytes
+
+        auto_styles = content_root.find(_clark("office", "automatic-styles"))
+        if auto_styles is None:
+            return report_bytes
+
+        description_attr = _clark("text", "description")
+        style_name_attr = _clark("text", "style-name")
+        paragraph_tags = (_clark("text", "p"), _clark("text", "h"))
+        base_styles = set()
+        found = False
+        for text_input in content_root.iter(_clark("text", "text-input")):
+            match = _HTML_TEXT_DESCRIPTION_RE.match(
+                (text_input.get(description_attr) or "").strip()
+            )
+            if not match:
+                continue
+            found = True
+            if "base_style" in match.group(2):
+                continue
+            wrapper = text_input.getparent()
+            while wrapper is not None and wrapper.tag not in paragraph_tags:
+                wrapper = wrapper.getparent()
+            base_style = wrapper.get(style_name_attr) if wrapper is not None else None
+            if not base_style:
+                continue
+            base_styles.add(base_style)
+            text_input.set(
+                description_attr,
+                "%s%s, base_style='%s'%s"
+                % (match.group(1), match.group(2), base_style, match.group(3)),
+            )
+        if not found:
+            return report_bytes
+
+        for base_style in [None] + sorted(base_styles):
+            for odf_align in _HTML_ALIGN_ODF_KEYS:
+                name = self._html_align_style_name(odf_align, base_style)
+                if self._find_style_by_name(auto_styles, name) is not None:
+                    continue
+                auto_styles.append(
+                    self._py3o_html_align_style_element(
+                        auto_styles, odf_align, base_style
+                    )
+                )
+
+        new_zip_entries = {
+            "content.xml": etree.tostring(
+                content_root, xml_declaration=True, encoding="UTF-8"
+            )
+        }
+        return self._py3o_write_merged_zip(report_zip_in, new_zip_entries)
+
     def _py3o_check_html_fonts(self, report_bytes):
         """Warn about any font-face this template declares but the server lacks.
 
@@ -1706,6 +1876,8 @@ class Py3oReport(models.TransientModel):
         if tag == "table":
             blocks.append(self._get_html_text_table(el))
             return
+        if self._get_html_text_aligned_block(el, tag, blocks):
+            return
         if tag in _HTML_ODF_BLOCK_TAGS:
             heading_style = _HTML_HEADING_STYLE_NAMES.get(tag)
             content = self._get_html_text_inline(
@@ -1744,8 +1916,80 @@ class Py3oReport(models.TransientModel):
         if inline_parts:
             blocks.append("".join(inline_parts))
 
+    def _get_html_text_align(self, el):
+        """Return the ODF alignment an HTML block asks for, if any.
+
+        Read from the element's own ``style="text-align: ..."``, else
+        from its legacy ``align`` attribute (what a paste from Word
+        leaves behind); ``style`` wins when both are present. A value
+        outside ``_HTML_ALIGN_VALUES`` counts as no alignment.
+
+        :param el: ``lxml.html`` element, a ``p``/``h1``-``h6``
+        :return: one of ``_HTML_ALIGN_ODF_KEYS``, or ``None``
+        :rtype: str or None
+        """
+        match = _HTML_ALIGN_STYLE_RE.search(el.get("style") or "")
+        value = match.group(1) if match else (el.get("align") or "")
+        return _HTML_ALIGN_VALUES.get(value.strip().lower())
+
+    def _get_html_text_aligned_block(self, el, tag, blocks):
+        """Append an aligned ``p``/heading as paragraphs of its own.
+
+        Does nothing, and returns ``False``, unless ``el`` is a
+        ``p``/``h1``-``h6`` that asks for an alignment (see
+        ``_get_html_text_align``), so every other element keeps its
+        existing rendering.
+
+        The block is cut at each of its own top-level ``<br>`` so a
+        title joined to its body by ``<br>`` becomes two paragraphs
+        instead of one justified line ending in a manual line break
+        (which LibreOffice stretches across the full width). Each
+        non-empty piece is emitted through the same close/reopen
+        escape ``_get_html_text_table`` uses, as a ``<text:p>`` whose
+        style comes from ``_html_align_style_name`` -- built on the
+        wrapper paragraph's style when the template placeholder passed
+        one (``base_style`` context key), so font and margins match
+        the surrounding text.
+
+        :param el: ``lxml.html`` element being walked
+        :param tag: the element's tag name
+        :param blocks: list mutated in place, one entry per paragraph
+        :return: ``True`` if ``el`` was handled here
+        :rtype: bool
+        """
+        if tag not in _HTML_ALIGN_BLOCK_TAGS:
+            return False
+        odf_align = self._get_html_text_align(el)
+        if not odf_align:
+            return False
+        heading_style = _HTML_HEADING_STYLE_NAMES.get(tag)
+        style_name = self._html_align_style_name(
+            odf_align, self.env.context.get("py3o_html_base_style")
+        )
+        segment = el.makeelement(el.tag, dict(el.attrib))
+        segment.text = el.text
+        segments = []
+        for child in el:
+            if isinstance(child.tag, str) and child.tag == "br":
+                segments.append(segment)
+                segment = el.makeelement(el.tag, dict(el.attrib))
+                segment.text = child.tail
+            else:
+                segment.append(deepcopy(child))
+        segments.append(segment)
+        for piece in segments:
+            content = self._get_html_text_inline(
+                piece, False, False, False, heading_style=heading_style
+            )
+            if _ODF_TAG_RE.sub("", content).strip():
+                blocks.append(
+                    '%s<text:p text:style-name="%s">%s</text:p>%s'
+                    % (_ESCAPE_BLOCK_PREFIX, style_name, content, _ESCAPE_BLOCK_SUFFIX)
+                )
+        return True
+
     @api.model
-    def _get_html_text(self, html_value):
+    def _get_html_text(self, html_value, base_style=None):
         """Convert an ``Html`` field value into ODF markup.
 
         Meant to replace a ``text:input`` already nested inside an
@@ -1780,16 +2024,30 @@ class Py3oReport(models.TransientModel):
         ``</text:p>`` or right after a ``<text:p>`` -- both render as
         an unwanted extra blank line.
 
+        A ``p``/``h1``-``h6`` carrying ``text-align`` (or ``align``) of
+        left, center, right or justify is emitted as paragraph(s) of
+        its own with that alignment -- see
+        ``_get_html_text_aligned_block``. HTML without it renders as
+        before.
+
         :param html_value: raw HTML string from an Odoo ``Html`` field
+        :param base_style: name of the paragraph style wrapping the
+            template placeholder; added to the call by
+            ``_py3o_ensure_html_align_styles`` so aligned paragraphs
+            keep that paragraph's font and margins. ``None`` selects
+            the generic alignment-only styles.
         :return: markup safe to insert as-is in the ODT template
         :rtype: genshi.core.Markup
         """
         if not html_value or not html_value.strip():
             return Markup("")
+        engine = self
+        if base_style:
+            engine = self.with_context(py3o_html_base_style=base_style)
         root = html.fragment_fromstring(html_value, create_parent="div")
         blocks = []
-        self._get_html_text_blocks(root, blocks)
-        return Markup(self._join_html_text_blocks(blocks))
+        engine._get_html_text_blocks(root, blocks)
+        return Markup(engine._join_html_text_blocks(blocks))
 
     def _join_html_text_blocks(self, blocks):
         """Join ``blocks`` with ``<text:line-break/>``, skipping escaped joins.
@@ -1797,7 +2055,12 @@ class Py3oReport(models.TransientModel):
         See ``_get_html_text``'s docstring for why a join next to a
         table/list block (one starting with ``</text:span></text:p>``
         or ending with ``<text:p><text:span>``) must not add a
-        ``<text:line-break/>``.
+        ``<text:line-break/>``. Two aligned blocks in a row are merged
+        into consecutive paragraphs instead of joined through the
+        close/reopen escape, which would leave an empty paragraph --
+        a visible blank line -- between them. An aligned block that
+        ends the content keeps its paragraph open so the template's own
+        closing tags end it, rather than leaving an empty one behind.
 
         :param blocks: block strings from ``_get_html_text_blocks``
         :return: the blocks joined into one string
@@ -1806,12 +2069,30 @@ class Py3oReport(models.TransientModel):
         parts = []
         for index, block in enumerate(blocks):
             if index > 0:
-                prev_is_escaped = blocks[index - 1].endswith(_ESCAPE_BLOCK_SUFFIX)
-                this_is_escaped = block.startswith(_ESCAPE_BLOCK_PREFIX)
-                if not prev_is_escaped and not this_is_escaped:
-                    parts.append("<text:line-break/>")
+                prev = blocks[index - 1]
+                if self._is_aligned_html_block(prev) and self._is_aligned_html_block(
+                    block
+                ):
+                    parts[-1] = parts[-1][: -len(_ESCAPE_BLOCK_SUFFIX)]
+                    block = block[len(_ESCAPE_BLOCK_PREFIX) :]
+                else:
+                    prev_is_escaped = prev.endswith(_ESCAPE_BLOCK_SUFFIX)
+                    this_is_escaped = block.startswith(_ESCAPE_BLOCK_PREFIX)
+                    if not prev_is_escaped and not this_is_escaped:
+                        parts.append("<text:line-break/>")
             parts.append(block)
+        if blocks and self._is_aligned_html_block(blocks[-1]):
+            parts[-1] = parts[-1][: -len(_ALIGN_BLOCK_END)] + "<text:span>"
         return "".join(parts)
+
+    def _is_aligned_html_block(self, block):
+        """Tell whether ``block`` was emitted by ``_get_html_text_aligned_block``.
+
+        :param block: one entry of the blocks list
+        :return: ``True`` for an aligned-paragraph block
+        :rtype: bool
+        """
+        return block.startswith(_ALIGN_BLOCK_START) and block.endswith(_ALIGN_BLOCK_END)
 
     @api.model
     def load_from_file(self, path, key):

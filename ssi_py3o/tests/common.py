@@ -189,20 +189,22 @@ _CONTENT_XML_NSMAP = (
 )
 
 
-def content_odt(auto_styles_inner=""):
+def content_odt(auto_styles_inner="", body_inner=""):
     """Build an .odt whose content.xml has a real <office:automatic-styles>.
 
     `_CONTENT_XML` (used by `report_odt()`) has no automatic-styles
     element at all, so it cannot exercise
     `_py3o_ensure_html_table_style()`. `auto_styles_inner` is raw XML
     placed inside that element (used to pre-seed a same-named style
-    for the idempotency test).
+    for the idempotency test). `body_inner` is raw XML placed inside
+    `<office:text>` (used to give a template a ``get_html_text``
+    placeholder).
     """
     content_xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         "<office:document-content %s>"
         "<office:automatic-styles>%s</office:automatic-styles>"
-        "<office:body><office:text/></office:body>"
+        "<office:body><office:text>%s</office:text></office:body>"
         "</office:document-content>"
-    ) % (_CONTENT_XML_NSMAP, auto_styles_inner)
+    ) % (_CONTENT_XML_NSMAP, auto_styles_inner, body_inner)
     return _build_odt(REPORT_STYLES_XML, content_xml=content_xml.encode("utf-8"))

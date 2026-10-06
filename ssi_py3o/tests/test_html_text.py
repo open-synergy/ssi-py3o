@@ -456,3 +456,206 @@ class TestHtmlText(YamlTransactionCase):
         """
         result = str(self.engine._get_html_text("<mark>teks</mark>"))
         self.assertIn("teks", result)
+
+    # -- paragraph alignment (text-align / align) ---------------------------
+
+    def _style_names(self, markup):
+        """Return every ``text:style-name`` value in ``markup``, in order."""
+        return re.findall(r'text:style-name="([^"]+)"', str(markup))
+
+    def test_alignment_values_map_to_paragraph_styles(self):
+        """Emit a paragraph of its own styled per alignment.
+
+        left/start, center, right/end and justify each select their
+        own ``OdooHtmlAlign*`` automatic style. The block closes the
+        template's paragraph (the escape used for tables and lists) and,
+        being last, leaves its own paragraph open for the template's
+        closing tags to end, so no empty paragraph trails it.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        expected = {
+            "left": "OdooHtmlAlignStart",
+            "start": "OdooHtmlAlignStart",
+            "center": "OdooHtmlAlignCenter",
+            "right": "OdooHtmlAlignEnd",
+            "end": "OdooHtmlAlignEnd",
+            "justify": "OdooHtmlAlignJustify",
+        }
+        for value, style_name in expected.items():
+            with self.subTest(value=value):
+                result = str(
+                    self.engine._get_html_text(
+                        '<p style="text-align: %s">teks</p>' % value
+                    )
+                )
+                self.assertEqual(
+                    result,
+                    '</text:span></text:p><text:p text:style-name="%s">teks'
+                    "<text:span>" % style_name,
+                )
+
+    def test_alignment_ignores_case_and_spacing(self):
+        """Read ``TEXT-ALIGN :JUSTIFY`` the same as ``text-align: justify``.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = self.engine._get_html_text('<p style="TEXT-ALIGN :JUSTIFY">x</p>')
+        self.assertEqual(self._style_names(result), ["OdooHtmlAlignJustify"])
+
+    def test_align_attribute_and_style_precedence(self):
+        """Honour the legacy ``align`` attribute; ``style`` wins over it.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        only_attr = self.engine._get_html_text('<p align="center">x</p>')
+        self.assertEqual(self._style_names(only_attr), ["OdooHtmlAlignCenter"])
+        both = self.engine._get_html_text(
+            '<p style="text-align: right" align="center">x</p>'
+        )
+        self.assertEqual(self._style_names(both), ["OdooHtmlAlignEnd"])
+
+    def test_aligned_block_is_split_at_br(self):
+        """Turn ``<p>title<br>body</p>`` into two aligned paragraphs.
+
+        A manual line break inside a justified paragraph would make
+        LibreOffice stretch the line it ends, so the title must not
+        share a paragraph with the body.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = str(
+            self.engine._get_html_text(
+                '<p style="text-align: justify"><b>Judul</b><br>Isi</p>'
+            )
+        )
+        self.assertEqual(result.count("<text:p text:style-name="), 2)
+        self.assertNotIn("<text:line-break/>", result)
+        self.assertLess(result.index("Judul"), result.index("Isi"))
+
+    def test_aligned_block_keeps_inline_formatting(self):
+        """Keep bold/italic/underline/color/size inside an aligned paragraph.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        inner = (
+            '<b>B</b> <i>I</i> <u>U</u> <span style="color: red; '
+            'font-size: 14px">C</span>'
+        )
+        plain = str(self.engine._get_html_text("<p>%s</p>" % inner))
+        aligned = str(
+            self.engine._get_html_text('<p style="text-align: justify">%s</p>' % inner)
+        )
+        self.assertIn(plain, aligned)
+
+    def test_aligned_heading(self):
+        """Align a heading and keep its heading style.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = self.engine._get_html_text('<h2 style="text-align: center">Judul</h2>')
+        self.assertEqual(self._style_names(result)[0], "OdooHtmlAlignCenter")
+        self.assertIn("OdooH2", self._style_names(result))
+
+    def test_base_style_selects_wrapper_specific_style(self):
+        """Use the wrapper paragraph's own alignment style when given.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = self.engine._get_html_text(
+            '<p style="text-align: justify">x</p>', base_style="P7"
+        )
+        self.assertEqual(self._style_names(result), ["OdooHtmlAlignJustify_P7"])
+
+    def test_aligned_paragraph_next_to_table_and_list(self):
+        """Leave a table and a list beside aligned paragraphs untouched.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        table_html = "<table><tr><td>t</td></tr></table>"
+        list_html = "<ul><li>x</li></ul>"
+        plain = str(self.engine._get_html_text(table_html + list_html))
+        aligned = str(
+            self.engine._get_html_text(
+                '<p style="text-align: justify">a</p>'
+                + table_html
+                + list_html
+                + '<p style="text-align: center">b</p>'
+            )
+        )
+        self.assertEqual(aligned.count("<table:table "), plain.count("<table:table "))
+        self.assertEqual(aligned.count("<text:list "), plain.count("<text:list "))
+        self.assertNotIn("<text:line-break/>", aligned)
+
+    def test_html_without_alignment_is_unchanged(self):
+        """Render HTML with no alignment exactly as before.
+
+        Covers plain paragraphs, a ``text-align`` that sits only on a
+        ``<span>``, an unknown value, a ``<li>`` and a table.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        samples = [
+            "<p>kata biasa</p>",
+            "<p>satu</p><p>dua</p>",
+            '<p><span style="text-align: justify">T</span><br><span>B</span></p>',
+            '<p style="text-align: foo">x</p>',
+            '<p style="margin: 0">x</p>',
+            "<ul><li>A</li></ul>",
+        ]
+        for html_value in samples:
+            with self.subTest(html=html_value):
+                result = str(self.engine._get_html_text(html_value))
+                self.assertNotIn("OdooHtmlAlign", result)
+        self.assertEqual(
+            str(self.engine._get_html_text("<p>satu</p><p>dua</p>")),
+            "satu<text:line-break/>dua",
+        )
+
+    def test_consecutive_aligned_blocks_leave_no_empty_paragraph(self):
+        """Put aligned paragraphs back to back with nothing between them.
+
+        Joining two escaped blocks the usual way would leave an empty
+        ``<text:p>`` -- a visible blank line -- between every pair of
+        aligned paragraphs.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = str(
+            self.engine._get_html_text(
+                '<p style="text-align: justify">a</p>'
+                '<p style="text-align: justify"></p>'
+                '<p style="text-align: center">b</p>'
+                '<p style="text-align: right">c</p>'
+            )
+        )
+        self.assertEqual(
+            result,
+            '</text:span></text:p><text:p text:style-name="OdooHtmlAlignJustify">a'
+            '</text:p><text:p text:style-name="OdooHtmlAlignCenter">b'
+            '</text:p><text:p text:style-name="OdooHtmlAlignEnd">c<text:span>',
+        )
+        self.assertNotIn("<text:p><text:span>", result)
+
+    def test_aligned_block_followed_by_plain_block(self):
+        """Reopen the template paragraph for plain text after an aligned one.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = str(
+            self.engine._get_html_text(
+                '<p style="text-align: justify">a</p><p>polos</p>'
+            )
+        )
+        self.assertTrue(result.endswith("</text:p><text:p><text:span>polos"))
