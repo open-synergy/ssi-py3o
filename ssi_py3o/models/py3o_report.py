@@ -2433,6 +2433,10 @@ class Py3oReport(models.TransientModel):
         content keeps its paragraph open so the template's own closing
         tags end it, rather than leaving an empty one behind.
 
+        Two tables in a row are the exception: a Word document merges
+        tables that touch, so the reopened paragraph between them is
+        kept and filled with the 1pt span.
+
         When the content starts with an escaped block, the wrapper
         paragraph is left holding nothing; a 1pt span with a zero-width
         space (``_HTML_TINY_SPAN``) is put in it so it takes the height
@@ -2449,7 +2453,16 @@ class Py3oReport(models.TransientModel):
             if index > 0:
                 prev_is_escaped = blocks[index - 1].endswith(suffix)
                 this_is_escaped = block.startswith(_ESCAPE_BLOCK_PREFIX)
-                if prev_is_escaped and this_is_escaped:
+                if (
+                    prev_is_escaped
+                    and this_is_escaped
+                    and self._is_table_html_block(blocks[index - 1])
+                    and self._is_table_html_block(block)
+                ):
+                    # Two tables with no paragraph between them are merged
+                    # by Word: keep the reopened paragraph, 1pt tall.
+                    parts.append(_HTML_TINY_SPAN)
+                elif prev_is_escaped and this_is_escaped:
                     parts[-1] = parts[-1][: -len(suffix)]
                     block = block[len(_ESCAPE_BLOCK_PREFIX) :]
                 elif not prev_is_escaped and not this_is_escaped:
@@ -2463,6 +2476,17 @@ class Py3oReport(models.TransientModel):
         elif blocks and blocks[-1].endswith(suffix):
             parts[-1] += _HTML_TINY_SPAN
         return "".join(parts)
+
+    def _is_table_html_block(self, block):
+        """Tell whether ``block`` was emitted by ``_get_html_text_table``.
+
+        :param block: one entry of the blocks list
+        :return: ``True`` for a table block
+        :rtype: bool
+        """
+        return block.startswith(
+            _ESCAPE_BLOCK_PREFIX + "<table:table "
+        ) and block.endswith("</table:table>%s" % self._html_escape_suffix())
 
     def _is_aligned_html_block(self, block):
         """Tell whether ``block`` was emitted by ``_get_html_text_aligned_block``.

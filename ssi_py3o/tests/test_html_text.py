@@ -1167,3 +1167,68 @@ class TestHtmlText(YamlTransactionCase):
         self.assertEqual(result.count("<text:line-break/>"), 2)
         self.assertIn("</text:list><text:p><text:span>c", result)
         self.assertIn("a<text:line-break/>b</text:span></text:p>", result)
+
+    def test_consecutive_tables_keep_one_tiny_separator_paragraph(self):
+        """Keep one 1pt paragraph between two tables.
+
+        With and without ``base_style`` the join holds exactly one
+        separator paragraph filled with the 1pt span, no full-size empty
+        paragraph, and both tables in their original order.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        for base_style in (None, "P7"):
+            with self.subTest(base=base_style):
+                suffix = (
+                    '<text:p text:style-name="P7"><text:span>'
+                    if base_style
+                    else "<text:p><text:span>"
+                )
+                result = str(
+                    self.engine._get_html_text(
+                        "<table><tr><td>uno</td></tr></table>"
+                        "<table><tr><td>dos</td></tr></table>",
+                        base_style=base_style,
+                    )
+                )
+                self.assertNotIn("</table:table><table:table", result)
+                self.assertIn(
+                    "</table:table>%s%s</text:span></text:p><table:table "
+                    % (suffix, TINY),
+                    result,
+                )
+                self.assertEqual(result.count("<table:table "), 2)
+                self.assertLess(result.index(">uno<"), result.index(">dos<"))
+                self.assertIsNone(self._EMPTY_PARAGRAPH_RE.search(result))
+                self.assertEqual(result.count(TINY), 3)
+                self.assertNotIn("<text:line-break/>", result)
+
+    def test_list_and_table_still_join_without_paragraph(self):
+        """Join a list and a table, either order, with nothing between.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        for first, second in (("list", "table"), ("table", "list")):
+            with self.subTest(first=first, second=second):
+                result = str(
+                    self.engine._get_html_text(
+                        self._BLOCK_HTML[first] + self._BLOCK_HTML[second]
+                    )
+                )
+                self.assertEqual(result.count("</text:span></text:p>"), 1)
+                self.assertEqual(result.count(TINY), 2)
+                self.assertIsNone(self._EMPTY_PARAGRAPH_RE.search(result))
+
+    def test_table_pairs_keep_line_break_count(self):
+        """Add no line break for a table pair or a table with text.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        table = self._BLOCK_HTML["table"]
+        result = str(
+            self.engine._get_html_text("<p>a</p><p>b</p>" + table + table + "<p>c</p>")
+        )
+        self.assertEqual(result.count("<text:line-break/>"), 1)
