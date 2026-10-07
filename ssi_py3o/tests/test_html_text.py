@@ -11,6 +11,7 @@ references/python-escape-hatch.md.
 import re
 
 from genshi.core import Markup
+from lxml import etree
 from odoo_yaml_test import YamlTransactionCase
 
 from odoo.tests import tagged
@@ -856,3 +857,177 @@ class TestHtmlText(YamlTransactionCase):
                 )
                 self.assertEqual(styled.count("<text:p"), plain.count("<text:p"))
                 self.assertNotIn("<text:p><text:span>", styled)
+
+    # -- #17: margins, indent, NBSP and Symbol bullets ---------------------
+
+    def _margins(self, style):
+        """Return the margin tuple read from a ``<p>`` with ``style``.
+
+        :param style: value of the ``style`` attribute
+        :return: tuple from ``_get_html_text_paragraph_margins``
+        :rtype: tuple or None
+        """
+        el = etree.fromstring('<p style="%s">x</p>' % style)
+        return self.engine._get_html_text_paragraph_margins(el)
+
+    def _paragraph_style_props(self, odf_align, base_style, margins):
+        """Build a paragraph style and return its ``fo:`` attributes.
+
+        :param odf_align: ODF alignment or ``None``
+        :param base_style: wrapper style name or ``None``
+        :param margins: margin tuple
+        :return: mapping of ``fo:`` attribute local names to values
+        :rtype: dict
+        """
+        auto_styles = etree.Element(
+            "{urn:oasis:names:tc:opendocument:xmlns:office:1.0}automatic-styles"
+        )
+        style = self.engine._py3o_html_align_style_element(
+            auto_styles, odf_align, base_style, margins
+        )
+        props = style[0]
+        prefix = "{urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0}"
+        return {
+            key[len(prefix) :]: value
+            for key, value in props.attrib.items()
+            if key.startswith(prefix)
+        }
+
+    def test_nbsp_runs_are_kept_and_ascii_spaces_collapse(self):
+        """Keep U+00A0 runs while ASCII whitespace still collapses.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = str(self.engine._get_html_text("<p>a\u00a0\u00a0\u00a0b  c\n\td</p>"))
+        self.assertIn("a\u00a0\u00a0\u00a0b c d", result)
+
+    def test_paragraph_margins_become_own_paragraph_style(self):
+        """Render a ``<p>`` with margins as a paragraph of its own.
+
+        The style name encodes the values, and the built style holds
+        left 16.5pt, indent -14.5pt and top 6pt.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = str(
+            self.engine._get_html_text(
+                '<p style="margin-left:16.55pt;text-indent:-14.4pt;'
+                'margin-top:6pt">butir</p>',
+                base_style="P7",
+            )
+        )
+        name = "OdooHtmlAlignInherit_mt6_ml16_5_tin14_5_P7"
+        self.assertIn('<text:p text:style-name="%s">butir</text:p>' % name, result)
+        self.assertEqual(
+            self._paragraph_style_props(None, "P7", (6.0, None, 16.5, None, -14.5)),
+            {"margin-top": "6pt", "margin-left": "16.5pt", "text-indent": "-14.5pt"},
+        )
+
+    def test_length_units_are_converted_to_points(self):
+        """Convert pt, px, cm, mm and in, rounded to 0.5pt.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text_paragraph_margins``, not a record side
+        effect).
+        """
+        cases = {
+            "margin-left:10pt": 10.0,
+            "margin-left:20px": 15.0,
+            "margin-left:1cm": 28.5,
+            "margin-left:10mm": 28.5,
+            "margin-left:0.5in": 36.0,
+            "margin-left:16.55pt": 16.5,
+            "text-indent:-14.4pt": -14.5,
+        }
+        for style, expected in cases.items():
+            with self.subTest(style=style):
+                margins = self._margins(style)
+                self.assertEqual(
+                    [value for value in margins if value is not None], [expected]
+                )
+
+    def test_margin_shorthand_with_one_to_four_values(self):
+        """Expand the ``margin`` shorthand in CSS order.
+
+        Tuple order is top, bottom, left, right, text-indent.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text_paragraph_margins``, not a record side
+        effect).
+        """
+        self.assertEqual(self._margins("margin:6pt"), (6, 6, 6, 6, None))
+        self.assertEqual(self._margins("margin:6pt 12pt"), (6, 6, 12, 12, None))
+        self.assertEqual(self._margins("margin:6pt 12pt 18pt"), (6, 18, 12, 12, None))
+        self.assertEqual(
+            self._margins("margin:6pt 12pt 18pt 24pt"), (6, 18, 24, 12, None)
+        )
+
+    def test_margins_combine_with_text_align_in_one_style(self):
+        """Give a justified paragraph with margins a single style.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = str(
+            self.engine._get_html_text(
+                '<p style="text-align:justify;margin-left:16.5pt">x</p>'
+            )
+        )
+        self.assertEqual(result.count("<text:p text:style-name="), 2)
+        self.assertIn('text:style-name="OdooHtmlAlignJustify_ml16_5">x', result)
+        self.assertEqual(
+            self._paragraph_style_props(
+                "justify", None, (None, None, 16.5, None, None)
+            ),
+            {"text-align": "justify", "margin-left": "16.5pt"},
+        )
+
+    def test_symbol_font_marker_becomes_bullet(self):
+        """Print U+00B7 and U+F0B7 in a Symbol font run as a bullet.
+
+        The same characters outside a Symbol font are left alone.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        symbol = str(
+            self.engine._get_html_text(
+                '<p><span style="font-family:Symbol">\u00b7</span>'
+                '<span style="mso-bidi-font-family:Symbol;font-family:Arial">'
+                "\u00b7</span></p>"
+            )
+        )
+        self.assertIn("\u2022", symbol)
+        self.assertEqual(symbol.count("\u00b7"), 1)
+        pua = str(
+            self.engine._get_html_text(
+                "<p style=\"font-family:'Symbol'\"><span>\uf0b7</span></p>"
+            )
+        )
+        self.assertIn("\u2022", pua)
+
+    def test_plain_paragraph_and_non_numeric_values_unchanged(self):
+        """Leave plain output alone and honour an explicit zero.
+
+        A ``<p>`` without the new properties, ``\u00b7`` outside a
+        Symbol font and a non-numeric margin render as before;
+        ``margin-bottom:0`` alone gives a zero bottom margin.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        plain = str(self.engine._get_html_text("<p>a \u00b7 b</p>"))
+        self.assertEqual(plain, "a \u00b7 b")
+        self.assertIsNone(self._margins("margin-left:auto"))
+        self.assertIsNone(self._margins("line-height:12pt"))
+        self.assertEqual(
+            self._margins("margin-bottom:0"), (None, 0.0, None, None, None)
+        )
+        zero = str(self.engine._get_html_text('<p style="margin-bottom:0cm">z</p>'))
+        self.assertIn('text:style-name="OdooHtmlAlignInherit_mb0"', zero)
+        self.assertEqual(
+            self._paragraph_style_props(None, None, (None, 0.0, None, None, None)),
+            {"margin-bottom": "0pt"},
+        )

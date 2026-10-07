@@ -215,6 +215,46 @@ _HTML_ALIGN_BLOCK_TAGS = ("p", "h1", "h2", "h3", "h4", "h5", "h6")
 _HTML_ALIGN_STYLE_RE = re.compile(
     r"text-align\s*:\s*(left|right|center|justify|start|end)\b", re.IGNORECASE
 )
+# CSS paragraph spacing read from a <p> (see _get_html_text_paragraph_margins).
+# The tuple order is the one used for ``margins`` everywhere: top, bottom,
+# left, right, text-indent.
+_HTML_MARGIN_PROPS = (
+    "margin-top",
+    "margin-bottom",
+    "margin-left",
+    "margin-right",
+    "text-indent",
+)
+_HTML_MARGIN_NAME_KEYS = ("mt", "mb", "ml", "mr", "ti")
+# Index into the CSS ``margin`` shorthand (top, right, bottom, left) for 1, 2,
+# 3 and 4 values, keyed by the number of values given.
+_HTML_MARGIN_SHORTHAND = {
+    1: (0, 0, 0, 0),
+    2: (0, 1, 0, 1),
+    3: (0, 1, 2, 1),
+    4: (0, 1, 2, 3),
+}
+_HTML_MARGIN_SHORTHAND_SIDES = (
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+)
+# CSS length -> points. 1px = 0.75pt (96px = 1in = 72pt).
+_HTML_LENGTH_TO_PT = {
+    "pt": 1.0,
+    "px": 0.75,
+    "cm": 72.0 / 2.54,
+    "mm": 72.0 / 25.4,
+    "in": 72.0,
+}
+_HTML_LENGTH_RE = re.compile(r"^([+-]?(?:\d+\.?\d*|\.\d+))\s*(pt|px|cm|mm|in)?$")
+# Only ASCII whitespace is collapsed in text; U+00A0 is kept as is.
+_HTML_ASCII_SPACE_RE = re.compile(r"[ \t\r\n\f]+")
+# A text run in a Symbol font: Word's bullet glyph is U+00B7 (or the private
+# use U+F0B7) there, which the editor shows as a bullet.
+_HTML_FONT_FAMILY_RE = re.compile(_CSS_PROP_START + r"font-family\s*:\s*([^;]*)")
+_HTML_SYMBOL_BULLETS = {0x00B7: "•", 0xF0B7: "•"}
 # A template placeholder as written in <text:text-input text:description>:
 # py3o://function="get_html_text(<expr>)". Group 2 is the call's arguments.
 _HTML_TEXT_DESCRIPTION_RE = re.compile(
@@ -325,7 +365,9 @@ class Py3oReport(models.TransientModel):
         report_bytes = self._py3o_ensure_html_text_styles(
             report_bytes, plain_sizes, heading_sizes
         )
-        report_bytes = self._py3o_ensure_html_align_styles(report_bytes)
+        report_bytes = self._py3o_ensure_html_align_styles(
+            report_bytes, self._py3o_collect_html_paragraph_styles(model_instance)
+        )
         self._py3o_check_html_fonts(report_bytes)
         report = self.ir_actions_report_id
         base_bytes = report._py3o_get_base_template_data()
@@ -842,8 +884,13 @@ class Py3oReport(models.TransientModel):
         """
         return "%s_%s" % (heading_style, size_style)
 
-    def _get_html_text_escape(self, text):
+    def _get_html_text_escape(self, text, symbol_font=False):
         """Escape XML special characters and collapse whitespace.
+
+        Only ASCII whitespace (space, tab, CR, LF, FF) is collapsed:
+        U+00A0 runs, such as the gap Word leaves after a list marker,
+        are kept. In a Symbol font run, U+00B7 and U+F0B7 become the
+        bullet U+2022.
 
         Also breaks up any unbroken run of ``_LONG_RUN_CHUNK`` or more
         non-whitespace characters (see ``_break_long_runs``) before
@@ -853,10 +900,14 @@ class Py3oReport(models.TransientModel):
         split it.
 
         :param text: raw text extracted from an HTML text node
+        :param symbol_font: whether the text sits in a Symbol font
+            element (see ``_html_in_symbol_font``)
         :return: text safe to place inside ODF ``text:p`` content
         :rtype: str
         """
-        collapsed = re.sub(r"\s+", " ", text)
+        if symbol_font:
+            text = text.translate(_HTML_SYMBOL_BULLETS)
+        collapsed = _HTML_ASCII_SPACE_RE.sub(" ", text)
         collapsed = self._break_long_runs(collapsed)
         collapsed = collapsed.replace("&", "&amp;")
         collapsed = collapsed.replace("<", "&lt;")
@@ -1076,6 +1127,29 @@ class Py3oReport(models.TransientModel):
             )
         return result
 
+    def _html_has_symbol_font(self, el):
+        """Tell whether ``el``'s own ``font-family`` names a Symbol font.
+
+        :param el: ``lxml.html`` element
+        :return: ``True`` if its ``style`` has a ``font-family`` that
+            contains ``Symbol``
+        :rtype: bool
+        """
+        match = _HTML_FONT_FAMILY_RE.search((el.get("style") or "").lower())
+        return bool(match and "symbol" in match.group(1))
+
+    def _html_in_symbol_font(self, el):
+        """Tell whether ``el`` or any of its ancestors is in a Symbol font.
+
+        :param el: ``lxml.html`` element
+        :return: ``True`` if ``el`` or an ancestor passes
+            ``_html_has_symbol_font``
+        :rtype: bool
+        """
+        return self._html_has_symbol_font(el) or any(
+            self._html_has_symbol_font(parent) for parent in el.iterancestors()
+        )
+
     def _get_html_text_inline(
         self,
         el,
@@ -1085,6 +1159,7 @@ class Py3oReport(models.TransientModel):
         color_style=None,
         heading_style=None,
         size_style=None,
+        symbol_font=None,
     ):
         """Serialize one element's content as inline ODF markup.
 
@@ -1106,6 +1181,9 @@ class Py3oReport(models.TransientModel):
             re-derived per element), or ``None``
         :param size_style: font-size style name inherited from
             ancestors, or ``None`` (see ``_get_html_text_size_style``)
+        :param symbol_font: whether ``el`` sits in a Symbol font
+            element; ``None`` works it out from ``el`` and its
+            ancestors (see ``_html_in_symbol_font``)
         :return: inline ODF markup for ``el``'s text, children and
             their tails
         :rtype: str
@@ -1122,12 +1200,14 @@ class Py3oReport(models.TransientModel):
         underline = underline or own_underline
         color_style = own_color or color_style
         size_style = own_size or size_style
+        if symbol_font is None:
+            symbol_font = self._html_in_symbol_font(el)
 
         parts = []
         if el.text:
             parts.append(
                 self._get_html_text_run(
-                    self._get_html_text_escape(el.text),
+                    self._get_html_text_escape(el.text, symbol_font),
                     bold,
                     italic,
                     underline,
@@ -1151,12 +1231,13 @@ class Py3oReport(models.TransientModel):
                         color_style,
                         heading_style,
                         size_style,
+                        symbol_font or self._html_has_symbol_font(child),
                     )
                 )
             if child.tail:
                 parts.append(
                     self._get_html_text_run(
-                        self._get_html_text_escape(child.tail),
+                        self._get_html_text_escape(child.tail, symbol_font),
                         bold,
                         italic,
                         underline,
@@ -1534,36 +1615,65 @@ class Py3oReport(models.TransientModel):
             style.append(deepcopy(text_props))
         return style
 
-    def _html_align_style_name(self, odf_align, base_style=None):
-        """Return the automatic paragraph style name for an alignment.
+    def _html_margin_name_suffix(self, margins):
+        """Return the style name part that encodes a margin tuple.
 
-        :param odf_align: one of ``_HTML_ALIGN_ODF_KEYS``
+        :param margins: ``(top, bottom, left, right, text_indent)`` in
+            points, each ``None`` when not given
+        :return: e.g. ``mt6_ml16_5_tin14_5`` (``.`` becomes ``_`` and a
+            minus sign ``n``)
+        :rtype: str
+        """
+        parts = []
+        for key, value in zip(_HTML_MARGIN_NAME_KEYS, margins):
+            if value is not None:
+                text = ("%s%g" % (key, value)).replace(".", "_")
+                parts.append(text.replace("-", "n"))
+        return "_".join(parts)
+
+    def _html_align_style_name(self, odf_align, base_style=None, margins=None):
+        """Return the automatic paragraph style name for a paragraph.
+
+        :param odf_align: one of ``_HTML_ALIGN_ODF_KEYS``, or ``None``
+            for a paragraph that only carries margins
         :param base_style: name of the paragraph style that wraps the
             template placeholder, or ``None``/empty for the generic
-            alignment-only style
+            style
+        :param margins: margin tuple from
+            ``_get_html_text_paragraph_margins``, or ``None``
         :return: style name, e.g. ``OdooHtmlAlignJustify_P7``
         :rtype: str
         """
-        name = "%s%s" % (_HTML_ALIGN_STYLE_PREFIX, odf_align.capitalize())
+        name = "%s%s" % (
+            _HTML_ALIGN_STYLE_PREFIX,
+            odf_align.capitalize() if odf_align else "Inherit",
+        )
+        if margins:
+            name = "%s_%s" % (name, self._html_margin_name_suffix(margins))
         if base_style:
             name = "%s_%s" % (name, base_style)
         return name
 
-    def _py3o_html_align_style_element(self, auto_styles, odf_align, base_style):
-        """Build the automatic paragraph style for one alignment.
+    def _py3o_html_align_style_element(
+        self, auto_styles, odf_align, base_style, margins=None
+    ):
+        """Build the automatic paragraph style for one paragraph kind.
 
         With ``base_style`` the new style takes over that wrapper
         paragraph's own look (font, size, margins) and only overrides
-        ``fo:text-align``: an automatic style cannot be the parent of
-        another automatic style, so the properties of an automatic
-        ``base_style`` are copied; a common ``base_style`` (not found
-        among the automatic styles) becomes the parent instead. Page
-        break attributes are dropped from a copy, since each emitted
-        paragraph is only a slice of the placeholder's content.
+        ``fo:text-align`` and the given margins: an automatic style
+        cannot be the parent of another automatic style, so the
+        properties of an automatic ``base_style`` are copied; a common
+        ``base_style`` (not found among the automatic styles) becomes
+        the parent instead. Page break attributes are dropped from a
+        copy, since each emitted paragraph is only a slice of the
+        placeholder's content.
 
         :param auto_styles: the ``office:automatic-styles`` element
-        :param odf_align: one of ``_HTML_ALIGN_ODF_KEYS``
+        :param odf_align: one of ``_HTML_ALIGN_ODF_KEYS``, or ``None``
         :param base_style: wrapper paragraph style name, or ``None``
+        :param margins: ``(top, bottom, left, right, text_indent)`` in
+            points, each ``None`` to keep the base value, or ``None``
         :return: the new, not yet attached ``style:style`` element
         :rtype: lxml element
         """
@@ -1577,17 +1687,22 @@ class Py3oReport(models.TransientModel):
             if base_style:
                 style.set(_clark("style", "parent-style-name"), base_style)
         style.set(
-            _clark("style", "name"), self._html_align_style_name(odf_align, base_style)
+            _clark("style", "name"),
+            self._html_align_style_name(odf_align, base_style, margins),
         )
         props = style.find(_clark("style", "paragraph-properties"))
         if props is None:
             props = etree.SubElement(style, _clark("style", "paragraph-properties"))
         for attr in ("break-before", "break-after"):
             props.attrib.pop(_clark("fo", attr), None)
-        props.set(_clark("fo", "text-align"), odf_align)
+        if odf_align:
+            props.set(_clark("fo", "text-align"), odf_align)
+        for attr, value in zip(_HTML_MARGIN_PROPS, margins or ()):
+            if value is not None:
+                props.set(_clark("fo", attr), "%gpt" % value)
         return style
 
-    def _py3o_ensure_html_align_styles(self, report_bytes):
+    def _py3o_ensure_html_align_styles(self, report_bytes, para_styles=()):
         """Inject the paragraph-alignment styles ``get_html_text`` needs.
 
         Only a template that has at least one ``get_html_text(...)``
@@ -1605,7 +1720,13 @@ class Py3oReport(models.TransientModel):
         Failure is non-fatal, like the other ``_py3o_ensure_*``
         methods: an unreadable template is returned unchanged.
 
+        Each ``(odf_align, margins)`` pair of ``para_styles`` (see
+        ``_py3o_collect_html_paragraph_styles``) is registered the same
+        way, once per wrapper style and for the generic case.
+
         :param report_bytes: raw ODT template bytes
+        :param para_styles: ``(odf_align, margins)`` pairs of the
+            paragraphs with margins that the record being printed uses
         :return: ``report_bytes``, with the alignment styles added
         :rtype: bytes
         """
@@ -1654,14 +1775,16 @@ class Py3oReport(models.TransientModel):
                 auto_styles.append(
                     self._py3o_html_list_item_style_element(auto_styles, base_style)
                 )
+        combos = [(odf_align, None) for odf_align in _HTML_ALIGN_ODF_KEYS]
+        combos.extend(sorted(para_styles, key=repr))
         for base_style in [None] + sorted(base_styles):
-            for odf_align in _HTML_ALIGN_ODF_KEYS:
-                name = self._html_align_style_name(odf_align, base_style)
+            for odf_align, margins in combos:
+                name = self._html_align_style_name(odf_align, base_style, margins)
                 if self._find_style_by_name(auto_styles, name) is not None:
                     continue
                 auto_styles.append(
                     self._py3o_html_align_style_element(
-                        auto_styles, odf_align, base_style
+                        auto_styles, odf_align, base_style, margins
                     )
                 )
 
@@ -1998,6 +2121,121 @@ class Py3oReport(models.TransientModel):
         if inline_parts:
             blocks.append("".join(inline_parts))
 
+    def _html_css_length_to_pt(self, token):
+        """Convert one CSS length to points, rounded to 0.5pt.
+
+        :param token: e.g. ``16.55pt``, ``-0.2in``, ``0``
+        :return: points, or ``None`` for a non-numeric value
+            (``auto``, ``normal``), an unknown unit, or a number
+            without a unit other than zero
+        :rtype: float or None
+        """
+        match = _HTML_LENGTH_RE.match(token.strip())
+        if not match:
+            return None
+        number = float(match.group(1))
+        unit = match.group(2)
+        if unit is None:
+            return 0.0 if number == 0 else None
+        return round(number * _HTML_LENGTH_TO_PT[unit] * 2) / 2 + 0.0
+
+    def _html_margin_shorthand(self, value):
+        """Expand a CSS ``margin`` shorthand into per-side points.
+
+        :param value: the declaration value, 1 to 4 lengths
+        :return: ``{"margin-top": pt, ...}`` for the sides that
+            resolve to a length
+        :rtype: dict
+        """
+        tokens = value.replace("!important", "").split()
+        indexes = _HTML_MARGIN_SHORTHAND.get(len(tokens))
+        result = {}
+        for side, index in zip(_HTML_MARGIN_SHORTHAND_SIDES, indexes or ()):
+            points = self._html_css_length_to_pt(tokens[index])
+            if points is not None:
+                result[side] = points
+        return result
+
+    def _get_html_text_paragraph_margins(self, el):
+        """Read the margins and text indent of a ``<p>``.
+
+        Reads ``margin-top``, ``margin-bottom``, ``margin-left``,
+        ``margin-right``, ``text-indent`` and the ``margin`` shorthand
+        from ``el``'s own ``style``, later declarations winning.
+
+        :param el: ``lxml.html`` element
+        :return: ``(top, bottom, left, right, text_indent)`` in points,
+            each ``None`` when not given, or ``None`` when ``el`` is
+            not a ``p`` or gives none of them
+        :rtype: tuple or None
+        """
+        if el.tag != "p":
+            return None
+        values = {}
+        for declaration in (el.get("style") or "").lower().split(";"):
+            name, separator, value = declaration.partition(":")
+            name = name.strip()
+            if not separator:
+                continue
+            if name == "margin":
+                values.update(self._html_margin_shorthand(value))
+            elif name in _HTML_MARGIN_PROPS:
+                points = self._html_css_length_to_pt(value.replace("!important", ""))
+                if points is not None:
+                    values[name] = points
+        if not values:
+            return None
+        return tuple(values.get(name) for name in _HTML_MARGIN_PROPS)
+
+    def _get_html_text_paragraph_styles(self, html_value):
+        """List the paragraph styles an Html value needs for its margins.
+
+        :param html_value: raw HTML string from an Odoo ``Html`` field
+        :return: set of ``(odf_align, margins)`` pairs, one per
+            ``p`` that carries margins or a text indent
+        :rtype: set
+        """
+        combos = set()
+        if not html_value:
+            return combos
+        try:
+            root = html.fragment_fromstring(html_value, create_parent="div")
+        except etree.ParserError:
+            return combos
+        for el in root.iter("p"):
+            margins = self._get_html_text_paragraph_margins(el)
+            if margins is not None:
+                combos.add((self._get_html_text_align(el), margins))
+        return combos
+
+    def _py3o_collect_html_paragraph_styles(self, model_instance, max_depth=1):
+        """Scan Html fields for the margin paragraph styles to register.
+
+        Same traversal as ``_py3o_collect_html_font_sizes``: the Html
+        fields of ``model_instance`` and one level of ``one2many``/
+        ``many2many`` below them.
+
+        :param model_instance: record(s) being printed
+        :param max_depth: how many relation hops to follow
+        :return: set of ``(odf_align, margins)`` pairs
+        :rtype: set
+        """
+        combos = set()
+        if not model_instance:
+            return combos
+        for fname, field in model_instance._fields.items():
+            if field.type == "html":
+                for rec in model_instance:
+                    combos |= self._get_html_text_paragraph_styles(getattr(rec, fname))
+            elif field.type in ("one2many", "many2many") and max_depth > 0:
+                for rec in model_instance:
+                    related = getattr(rec, fname)
+                    if related:
+                        combos |= self._py3o_collect_html_paragraph_styles(
+                            related, max_depth - 1
+                        )
+        return combos
+
     def _get_html_text_align(self, el):
         """Return the ODF alignment an HTML block asks for, if any.
 
@@ -2015,12 +2253,13 @@ class Py3oReport(models.TransientModel):
         return _HTML_ALIGN_VALUES.get(value.strip().lower())
 
     def _get_html_text_aligned_block(self, el, tag, blocks):
-        """Append an aligned ``p``/heading as paragraphs of its own.
+        """Append an aligned or spaced ``p``/heading as paragraphs of its own.
 
         Does nothing, and returns ``False``, unless ``el`` is a
         ``p``/``h1``-``h6`` that asks for an alignment (see
-        ``_get_html_text_align``), so every other element keeps its
-        existing rendering.
+        ``_get_html_text_align``) or a ``p`` that carries margins or
+        a text indent (see ``_get_html_text_paragraph_margins``), so
+        every other element keeps its existing rendering.
 
         The block is cut at each of its own top-level ``<br>`` so a
         title joined to its body by ``<br>`` becomes two paragraphs
@@ -2042,12 +2281,14 @@ class Py3oReport(models.TransientModel):
         if tag not in _HTML_ALIGN_BLOCK_TAGS:
             return False
         odf_align = self._get_html_text_align(el)
-        if not odf_align:
+        margins = self._get_html_text_paragraph_margins(el)
+        if not odf_align and margins is None:
             return False
         heading_style = _HTML_HEADING_STYLE_NAMES.get(tag)
         style_name = self._html_align_style_name(
-            odf_align, self.env.context.get("py3o_html_base_style")
+            odf_align, self.env.context.get("py3o_html_base_style"), margins
         )
+        symbol_font = self._html_in_symbol_font(el)
         segment = el.makeelement(el.tag, dict(el.attrib))
         segment.text = el.text
         segments = []
@@ -2061,7 +2302,12 @@ class Py3oReport(models.TransientModel):
         segments.append(segment)
         for piece in segments:
             content = self._get_html_text_inline(
-                piece, False, False, False, heading_style=heading_style
+                piece,
+                False,
+                False,
+                False,
+                heading_style=heading_style,
+                symbol_font=symbol_font,
             )
             if _ODF_TAG_RE.sub("", content).strip():
                 blocks.append(

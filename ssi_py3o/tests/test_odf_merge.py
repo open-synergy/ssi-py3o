@@ -639,6 +639,36 @@ class TestOdfMerge(TransactionCase):
         self.assertEqual(plain_sizes, set())
         self.assertEqual(heading_sizes, set())
 
+    def test_collect_and_inject_paragraph_margin_styles(self):
+        """Collect margin combos from a record and inject matching styles.
+
+        The names injected into the template are the ones
+        ``_html_align_style_name`` gives the render, for the wrapper
+        style and for the generic case.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_collect_html_font_sizes_from_record`` above).
+        """
+        template = self.env["mail.template"].create(
+            {
+                "name": "ssi_py3o margin scan test",
+                "body_html": (
+                    '<p style="margin-left:16.55pt;text-indent:-14.4pt;'
+                    'margin-top:6pt">a</p><p>plain</p>'
+                ),
+            }
+        )
+        combos = self.engine._py3o_collect_html_paragraph_styles(template)
+        self.assertEqual(combos, {(None, (6.0, None, 16.5, None, -14.5))})
+        result = self.engine._py3o_ensure_html_align_styles(
+            self._placeholder_odt(), combos
+        )
+        root = self._content_of(result)
+        auto_styles = root.find(_q("office", "automatic-styles"))
+        names = {c.get(_q("style", "name")) for c in auto_styles}
+        self.assertIn("OdooHtmlAlignInherit_mt6_ml16_5_tin14_5_P7", names)
+        self.assertIn("OdooHtmlAlignInherit_mt6_ml16_5_tin14_5", names)
+
     # -- helpers --------------------------------------------------------------
 
     def _create_template(self, name, filetype, template_data):
