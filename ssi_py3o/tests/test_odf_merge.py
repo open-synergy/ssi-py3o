@@ -766,3 +766,40 @@ class TestOdfMerge(TransactionCase):
         self.assertEqual(
             self.engine._py3o_ensure_html_align_styles(b"not a zip"), b"not a zip"
         )
+
+    def test_html_list_item_styles_injected(self):
+        """Register a list item style per wrapper style with its font.
+
+        An automatic wrapper's text properties and parent are copied,
+        its margins and page break are not; a common wrapper becomes
+        the parent instead.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_align_styles(self._placeholder_odt())
+        auto_styles = self._content_of(result).find(_q("office", "automatic-styles"))
+        by_name = {c.get(_q("style", "name")): c for c in auto_styles}
+        item = by_name["OdooListItem_P7"]
+        self.assertEqual(item.get(_q("style", "family")), "paragraph")
+        self.assertEqual(item.get(_q("style", "parent-style-name")), "Standard")
+        self.assertEqual(
+            item.find(_q("style", "text-properties")).get(_q("fo", "font-size")),
+            "10pt",
+        )
+        self.assertIsNone(item.find(_q("style", "paragraph-properties")))
+        source = content_odt(
+            "",
+            '<text:p text:style-name="Standard"><text:text-input '
+            'text:description="py3o://function=&quot;get_html_text(o.a)'
+            '&quot;">a</text:text-input></text:p>',
+        )
+        auto_styles = self._content_of(
+            self.engine._py3o_ensure_html_align_styles(source)
+        ).find(_q("office", "automatic-styles"))
+        common = next(
+            c
+            for c in auto_styles
+            if c.get(_q("style", "name")) == "OdooListItem_Standard"
+        )
+        self.assertEqual(common.get(_q("style", "parent-style-name")), "Standard")

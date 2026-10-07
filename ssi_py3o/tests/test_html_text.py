@@ -742,3 +742,117 @@ class TestHtmlText(YamlTransactionCase):
                     )
                 )
                 self.assertIn('text:style-name="Bold"', result)
+
+    def test_list_items_use_base_style_variant(self):
+        """Style every ``<ul>``/``<ol>`` item with the wrapper's variant.
+
+        With ``base_style`` each item paragraph names the
+        ``OdooListItem_<base_style>`` variant, never the fixed 8pt
+        ``OdooListItem`` style.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        for tag in ("ul", "ol"):
+            with self.subTest(tag=tag):
+                result = str(
+                    self.engine._get_html_text(
+                        "<%(t)s><li>a</li><li>b</li></%(t)s>" % {"t": tag},
+                        base_style="P7",
+                    )
+                )
+                self.assertEqual(
+                    result.count('<text:p text:style-name="OdooListItem_P7">'), 2
+                )
+                self.assertNotIn('text:style-name="OdooListItem"', result)
+
+    def test_paragraph_after_list_carries_base_style(self):
+        """Reopen the paragraph after a list with the wrapper style.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = str(
+            self.engine._get_html_text(
+                "<ul><li>a</li></ul><p>sesudah</p>", base_style="P7"
+            )
+        )
+        self.assertIn(
+            '</text:list><text:p text:style-name="P7"><text:span>sesudah',
+            result,
+        )
+
+    def test_paragraph_after_table_and_aligned_block_carries_base_style(self):
+        """Reopen the paragraph after a table and an aligned paragraph.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        after_table = str(
+            self.engine._get_html_text(
+                "<table><tr><td>t</td></tr></table><p>sesudah</p>",
+                base_style="P7",
+            )
+        )
+        self.assertIn(
+            '</table:table><text:p text:style-name="P7"><text:span>sesudah',
+            after_table,
+        )
+        after_aligned = str(
+            self.engine._get_html_text(
+                '<p style="text-align: justify">a</p><p>sesudah</p>',
+                base_style="P7",
+            )
+        )
+        self.assertIn(
+            '</text:p><text:p text:style-name="P7"><text:span>sesudah',
+            after_aligned,
+        )
+
+    def test_no_base_style_output_is_unchanged(self):
+        """Keep the fixed style and unstyled reopen without ``base_style``.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = str(
+            self.engine._get_html_text(
+                "<ul><li>a</li></ul><p>x</p>"
+                "<table><tr><td>t</td></tr></table><p>y</p>"
+                '<p style="text-align: center">c</p><p>z</p>'
+            )
+        )
+        self.assertIn('<text:p text:style-name="OdooListItem">', result)
+        self.assertIn("</text:list><text:p><text:span>x", result)
+        self.assertIn("</table:table><text:p><text:span>y", result)
+        self.assertNotIn("OdooListItem_", result)
+        self.assertNotIn("P7", result)
+
+    def test_base_style_keeps_line_break_count(self):
+        """Add no line break or empty paragraph when ``base_style`` is set.
+
+        The count of ``<text:line-break/>`` and of empty reopened
+        paragraphs is the same with and without ``base_style`` for a
+        list, table and aligned paragraph in a row, and for a list
+        that ends the content.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        samples = (
+            "<p>a</p><ul><li>x</li></ul><p>b</p>"
+            "<table><tr><td>t</td></tr></table>"
+            '<p style="text-align: justify">c</p><p>d</p>',
+            "<p>a</p><ul><li>x</li></ul>",
+            '<ol><li>x</li></ol><p style="text-align: end">c</p>',
+        )
+        for html_value in samples:
+            with self.subTest(html=html_value):
+                plain = str(self.engine._get_html_text(html_value))
+                styled = str(self.engine._get_html_text(html_value, base_style="P7"))
+                self.assertEqual(
+                    styled.count("<text:line-break/>"),
+                    plain.count("<text:line-break/>"),
+                )
+                self.assertEqual(styled.count("<text:p"), plain.count("<text:p"))
+                self.assertNotIn("<text:p><text:span>", styled)

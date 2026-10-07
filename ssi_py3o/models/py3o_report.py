@@ -170,6 +170,8 @@ _HTML_TABLE_TEXT_FONT_SIZE = "8pt"
 # _get_html_text_table instead of staying inline in the shared placeholder
 # paragraph.
 _HTML_LIST_ITEM_STYLE_NAME = "OdooListItem"
+# Per-wrapper variant of the list item style: "OdooListItem_<base_style>".
+_HTML_LIST_ITEM_VARIANT_FORMAT = "%s_%s"
 _HTML_LIST_OL_STYLE_NAME = "OdooOL"
 _HTML_LIST_UL_STYLE_NAME = "OdooUL"
 _HTML_LIST_STYLE_NAMES = {
@@ -224,7 +226,6 @@ _ALIGN_BLOCK_START = '%s<text:p text:style-name="%s' % (
     _ESCAPE_BLOCK_PREFIX,
     _HTML_ALIGN_STYLE_PREFIX,
 )
-_ALIGN_BLOCK_END = "</text:p>%s" % _ESCAPE_BLOCK_SUFFIX
 
 # text (character) automatic styles injected by _py3o_ensure_html_text_styles()
 # for <h1>-<h6> font sizes -- same constraint as the table-cell style above,
@@ -1470,6 +1471,69 @@ class Py3oReport(models.TransientModel):
         }
         return self._py3o_write_merged_zip(report_zip_in, new_zip_entries)
 
+    def _html_escape_suffix(self):
+        """Return the markup that reopens a paragraph after an escaped block.
+
+        With a wrapper style (``py3o_html_base_style`` context key) the
+        reopened paragraph carries it as ``text:style-name``, so text
+        following a list, table or aligned paragraph keeps the
+        placeholder paragraph's font and size. Without one, the
+        unstyled ``_ESCAPE_BLOCK_SUFFIX`` is returned.
+
+        :return: ``<text:p ...><text:span>`` markup
+        :rtype: str
+        """
+        base_style = self.env.context.get("py3o_html_base_style")
+        if not base_style:
+            return _ESCAPE_BLOCK_SUFFIX
+        return '<text:p text:style-name="%s"><text:span>' % base_style
+
+    def _html_list_item_style_name(self, base_style=None):
+        """Return the paragraph style name used by a list item.
+
+        :param base_style: name of the paragraph style that wraps the
+            template placeholder, or ``None``/empty for the fixed
+            fallback style
+        :return: style name, e.g. ``OdooListItem_P7``
+        :rtype: str
+        """
+        if not base_style:
+            return _HTML_LIST_ITEM_STYLE_NAME
+        return _HTML_LIST_ITEM_VARIANT_FORMAT % (
+            _HTML_LIST_ITEM_STYLE_NAME,
+            base_style,
+        )
+
+    def _py3o_html_list_item_style_element(self, auto_styles, base_style):
+        """Build the list item paragraph style for one wrapper style.
+
+        Only the text properties of the wrapper paragraph (font, size
+        and their asian/complex counterparts) are carried over.
+        Margins, alignment and page breaks are left out, so item
+        spacing and indentation stay with the list style. An automatic
+        ``base_style`` has its text properties copied (and keeps its
+        own parent); a common one becomes the parent instead.
+
+        :param auto_styles: the ``office:automatic-styles`` element
+        :param base_style: wrapper paragraph style name
+        :return: the new, not yet attached ``style:style`` element
+        :rtype: lxml element
+        """
+        style = etree.Element(_clark("style", "style"))
+        style.set(_clark("style", "name"), self._html_list_item_style_name(base_style))
+        style.set(_clark("style", "family"), "paragraph")
+        source = self._find_style_by_name(auto_styles, base_style)
+        if source is None:
+            style.set(_clark("style", "parent-style-name"), base_style)
+            return style
+        parent = source.get(_clark("style", "parent-style-name"))
+        if parent:
+            style.set(_clark("style", "parent-style-name"), parent)
+        text_props = source.find(_clark("style", "text-properties"))
+        if text_props is not None:
+            style.append(deepcopy(text_props))
+        return style
+
     def _html_align_style_name(self, odf_align, base_style=None):
         """Return the automatic paragraph style name for an alignment.
 
@@ -1584,6 +1648,12 @@ class Py3oReport(models.TransientModel):
         if not found:
             return report_bytes
 
+        for base_style in sorted(base_styles):
+            name = self._html_list_item_style_name(base_style)
+            if self._find_style_by_name(auto_styles, name) is None:
+                auto_styles.append(
+                    self._py3o_html_list_item_style_element(auto_styles, base_style)
+                )
         for base_style in [None] + sorted(base_styles):
             for odf_align in _HTML_ALIGN_ODF_KEYS:
                 name = self._html_align_style_name(odf_align, base_style)
@@ -1780,7 +1850,7 @@ class Py3oReport(models.TransientModel):
         return "%s%s%s" % (
             _ESCAPE_BLOCK_PREFIX,
             "".join(parts),
-            _ESCAPE_BLOCK_SUFFIX,
+            self._html_escape_suffix(),
         )
 
     def _get_html_text_list(self, tag, el, blocks):
@@ -1815,6 +1885,9 @@ class Py3oReport(models.TransientModel):
         :return: None
         """
         items = []
+        item_style = self._html_list_item_style_name(
+            self.env.context.get("py3o_html_base_style")
+        )
 
         def _flush():
             """Emit the accumulated ``items`` as one ``<text:list>`` block."""
@@ -1825,7 +1898,7 @@ class Py3oReport(models.TransientModel):
                         _ESCAPE_BLOCK_PREFIX,
                         _HTML_LIST_STYLE_NAMES[tag],
                         "".join(items),
-                        _ESCAPE_BLOCK_SUFFIX,
+                        self._html_escape_suffix(),
                     )
                 )
                 items.clear()
@@ -1838,7 +1911,7 @@ class Py3oReport(models.TransientModel):
                 items.append(
                     "<text:list-item>"
                     '<text:p text:style-name="%s">%s</text:p>'
-                    "</text:list-item>" % (_HTML_LIST_ITEM_STYLE_NAME, content)
+                    "</text:list-item>" % (item_style, content)
                 )
             else:
                 _flush()
@@ -1993,7 +2066,12 @@ class Py3oReport(models.TransientModel):
             if _ODF_TAG_RE.sub("", content).strip():
                 blocks.append(
                     '%s<text:p text:style-name="%s">%s</text:p>%s'
-                    % (_ESCAPE_BLOCK_PREFIX, style_name, content, _ESCAPE_BLOCK_SUFFIX)
+                    % (
+                        _ESCAPE_BLOCK_PREFIX,
+                        style_name,
+                        content,
+                        self._html_escape_suffix(),
+                    )
                 )
         return True
 
@@ -2075,6 +2153,7 @@ class Py3oReport(models.TransientModel):
         :return: the blocks joined into one string
         :rtype: str
         """
+        suffix = self._html_escape_suffix()
         parts = []
         for index, block in enumerate(blocks):
             if index > 0:
@@ -2082,16 +2161,17 @@ class Py3oReport(models.TransientModel):
                 if self._is_aligned_html_block(prev) and self._is_aligned_html_block(
                     block
                 ):
-                    parts[-1] = parts[-1][: -len(_ESCAPE_BLOCK_SUFFIX)]
+                    parts[-1] = parts[-1][: -len(suffix)]
                     block = block[len(_ESCAPE_BLOCK_PREFIX) :]
                 else:
-                    prev_is_escaped = prev.endswith(_ESCAPE_BLOCK_SUFFIX)
+                    prev_is_escaped = prev.endswith(suffix)
                     this_is_escaped = block.startswith(_ESCAPE_BLOCK_PREFIX)
                     if not prev_is_escaped and not this_is_escaped:
                         parts.append("<text:line-break/>")
             parts.append(block)
         if blocks and self._is_aligned_html_block(blocks[-1]):
-            parts[-1] = parts[-1][: -len(_ALIGN_BLOCK_END)] + "<text:span>"
+            align_end = "</text:p>%s" % suffix
+            parts[-1] = parts[-1][: -len(align_end)] + "<text:span>"
         return "".join(parts)
 
     def _is_aligned_html_block(self, block):
@@ -2101,7 +2181,8 @@ class Py3oReport(models.TransientModel):
         :return: ``True`` for an aligned-paragraph block
         :rtype: bool
         """
-        return block.startswith(_ALIGN_BLOCK_START) and block.endswith(_ALIGN_BLOCK_END)
+        align_end = "</text:p>%s" % self._html_escape_suffix()
+        return block.startswith(_ALIGN_BLOCK_START) and block.endswith(align_end)
 
     @api.model
     def load_from_file(self, path, key):
