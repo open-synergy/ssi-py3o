@@ -16,6 +16,10 @@ from odoo_yaml_test import YamlTransactionCase
 
 from odoo.tests import tagged
 
+# The 1pt span (one zero-width space) that fills the paragraph an escape block
+# leaves empty at the start or end of the content.
+TINY = '<text:span text:style-name="OdooHtmlTiny">\u200b</text:span>'
+
 
 @tagged("post_install", "-at_install")
 class TestHtmlText(YamlTransactionCase):
@@ -89,14 +93,14 @@ class TestHtmlText(YamlTransactionCase):
         result = str(self.engine._get_html_text("<ul><li>A</li><li>B</li></ul>"))
         self.assertEqual(
             result,
-            "</text:span></text:p>"
+            TINY + "</text:span></text:p>"
             '<text:list text:style-name="OdooUL">'
             '<text:list-item><text:p text:style-name="OdooListItem">A</text:p>'
             "</text:list-item>"
             '<text:list-item><text:p text:style-name="OdooListItem">B</text:p>'
             "</text:list-item>"
             "</text:list>"
-            "<text:p><text:span>",
+            "<text:p><text:span>" + TINY,
         )
 
     def test_ordered_list_numbers(self):
@@ -390,6 +394,8 @@ class TestHtmlText(YamlTransactionCase):
         )
         self.assertIn("</text:span></text:p><table:table", result)
         self.assertIn("</table:table><text:p><text:span>", result)
+        self.assertTrue(result.startswith(TINY + "</text:span></text:p>"))
+        self.assertTrue(result.endswith("<text:p><text:span>" + TINY))
         self.assertEqual(result.count("<table:table-row>"), 2)
         self.assertEqual(result.count("<table:table-column/>"), 2)
         self.assertIn('<text:span text:style-name="Bold">Col 1</text:span>', result)
@@ -493,7 +499,7 @@ class TestHtmlText(YamlTransactionCase):
                 )
                 self.assertEqual(
                     result,
-                    '</text:span></text:p><text:p text:style-name="%s">teks'
+                    TINY + '</text:span></text:p><text:p text:style-name="%s">teks'
                     "<text:span>" % style_name,
                 )
 
@@ -642,7 +648,8 @@ class TestHtmlText(YamlTransactionCase):
         )
         self.assertEqual(
             result,
-            '</text:span></text:p><text:p text:style-name="OdooHtmlAlignJustify">a'
+            TINY + "</text:span></text:p>"
+            '<text:p text:style-name="OdooHtmlAlignJustify">a'
             '</text:p><text:p text:style-name="OdooHtmlAlignCenter">b'
             '</text:p><text:p text:style-name="OdooHtmlAlignEnd">c<text:span>',
         )
@@ -659,6 +666,7 @@ class TestHtmlText(YamlTransactionCase):
                 '<p style="text-align: justify">a</p><p>polos</p>'
             )
         )
+        self.assertTrue(result.startswith(TINY + "</text:span></text:p>"))
         self.assertTrue(result.endswith("</text:p><text:p><text:span>polos"))
 
     # -- CSS property names must match whole, not as a suffix ---------------
@@ -823,6 +831,7 @@ class TestHtmlText(YamlTransactionCase):
                 '<p style="text-align: center">c</p><p>z</p>'
             )
         )
+        self.assertTrue(result.startswith(TINY + "</text:span></text:p>"))
         self.assertIn('<text:p text:style-name="OdooListItem">', result)
         self.assertIn("</text:list><text:p><text:span>x", result)
         self.assertIn("</table:table><text:p><text:span>y", result)
@@ -857,6 +866,13 @@ class TestHtmlText(YamlTransactionCase):
                 )
                 self.assertEqual(styled.count("<text:p"), plain.count("<text:p"))
                 self.assertNotIn("<text:p><text:span>", styled)
+                self.assertEqual(styled.count(TINY), plain.count(TINY))
+                for text in (plain, styled):
+                    self.assertIsNone(
+                        re.search(
+                            r"<text:p[^>]*><text:span></text:span></text:p>", text
+                        )
+                    )
 
     # -- #17: margins, indent, NBSP and Symbol bullets ---------------------
 
@@ -1031,3 +1047,123 @@ class TestHtmlText(YamlTransactionCase):
             self._paragraph_style_props(None, None, (None, 0.0, None, None, None)),
             {"margin-bottom": "0pt"},
         )
+
+    # -- #18: no empty paragraph at joins, start and end -------------------
+
+    _EMPTY_PARAGRAPH_RE = re.compile(r"<text:p[^>]*><text:span></text:span></text:p>")
+
+    _BLOCK_HTML = {
+        "list": "<ul><li>x</li></ul>",
+        "table": "<table><tr><td>t</td></tr></table>",
+        "rata": '<p style="text-align: justify">r</p>',
+        "margin": '<p style="margin-left:16.5pt">m</p>',
+    }
+
+    def test_mixed_block_pairs_join_without_empty_paragraph(self):
+        """Join the six mixed block pairs with no paragraph between them.
+
+        With and without ``base_style`` the first block's reopen marker
+        and the second block's close marker are both dropped, so the two
+        blocks sit side by side and no empty paragraph is left at the
+        join.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        pairs = (
+            ("rata", "list"),
+            ("list", "rata"),
+            ("table", "list"),
+            ("list", "table"),
+            ("margin", "list"),
+            ("list", "margin"),
+        )
+        for first, second in pairs:
+            for base_style in (None, "P7"):
+                with self.subTest(first=first, second=second, base=base_style):
+                    suffix = (
+                        '<text:p text:style-name="P7"><text:span>'
+                        if base_style
+                        else "<text:p><text:span>"
+                    )
+                    result = str(
+                        self.engine._get_html_text(
+                            self._BLOCK_HTML[first] + self._BLOCK_HTML[second],
+                            base_style=base_style,
+                        )
+                    )
+                    self.assertNotIn("</text:span></text:p>" + suffix, result)
+                    self.assertEqual(result.count("</text:span></text:p>"), 1)
+                    self.assertEqual(
+                        result.count(suffix), int(second in ("list", "table"))
+                    )
+                    self.assertIsNone(self._EMPTY_PARAGRAPH_RE.search(result))
+
+    def test_content_starting_with_escape_block_gets_tiny_span(self):
+        """Put the 1pt span before the wrapper close of a leading block.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        for kind, html_value in self._BLOCK_HTML.items():
+            with self.subTest(kind=kind):
+                result = str(self.engine._get_html_text(html_value + "<p>z</p>"))
+                self.assertTrue(result.startswith(TINY + "</text:span></text:p>"))
+        plain = str(self.engine._get_html_text("<p>z</p>" + self._BLOCK_HTML["list"]))
+        self.assertFalse(plain.startswith(TINY))
+
+    def test_content_ending_with_list_or_table_gets_tiny_span(self):
+        """Fill the last reopened paragraph with the 1pt span.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        for kind in ("list", "table"):
+            with self.subTest(kind=kind):
+                result = str(
+                    self.engine._get_html_text("<p>a</p>" + self._BLOCK_HTML[kind])
+                )
+                self.assertTrue(result.endswith("<text:p><text:span>" + TINY))
+                self.assertEqual(result.count(TINY), 1)
+        aligned = str(self.engine._get_html_text(self._BLOCK_HTML["rata"]))
+        self.assertTrue(aligned.endswith("r<text:span>"))
+
+    def test_tiny_style_name_matches_render_markup(self):
+        """Use the style name the template injection registers.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = str(self.engine._get_html_text(self._BLOCK_HTML["list"]))
+        self.assertEqual(
+            re.findall(r'text:style-name="(OdooHtmlTiny)"', result),
+            ["OdooHtmlTiny", "OdooHtmlTiny"],
+        )
+
+    def test_content_without_escape_blocks_is_unchanged(self):
+        """Render content with no escape block as before.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = str(self.engine._get_html_text("<p>satu</p><p>dua</p>"))
+        self.assertEqual(result, "satu<text:line-break/>dua")
+        self.assertNotIn("OdooHtmlTiny", result)
+
+    def test_escape_block_with_plain_paragraph_keeps_line_break_count(self):
+        """Keep the line breaks and the plain/escape joins unchanged.
+
+        A plain paragraph before or after a list adds no line break,
+        and the number of line breaks between plain paragraphs stays.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = str(
+            self.engine._get_html_text(
+                "<p>a</p><p>b</p><ul><li>x</li></ul><p>c</p><p>d</p>"
+            )
+        )
+        self.assertEqual(result.count("<text:line-break/>"), 2)
+        self.assertIn("</text:list><text:p><text:span>c", result)
+        self.assertIn("a<text:line-break/>b</text:span></text:p>", result)

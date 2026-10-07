@@ -797,6 +797,33 @@ class TestOdfMerge(TransactionCase):
             self.engine._py3o_ensure_html_align_styles(b"not a zip"), b"not a zip"
         )
 
+    def test_html_tiny_style_registered(self):
+        """Register the 1pt text style on a template with a placeholder.
+
+        The style is a text style of 1pt, is added once, and a template
+        without a ``get_html_text`` placeholder does not get it.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        once = self.engine._py3o_ensure_html_align_styles(self._placeholder_odt())
+        twice = self.engine._py3o_ensure_html_align_styles(once)
+        for result in (once, twice):
+            auto_styles = self._content_of(result).find(
+                _q("office", "automatic-styles")
+            )
+            tiny = [
+                c for c in auto_styles if c.get(_q("style", "name")) == "OdooHtmlTiny"
+            ]
+            self.assertEqual(len(tiny), 1)
+            self.assertEqual(tiny[0].get(_q("style", "family")), "text")
+            self.assertEqual(
+                tiny[0].find(_q("style", "text-properties")).get(_q("fo", "font-size")),
+                "1pt",
+            )
+        plain = content_odt()
+        self.assertEqual(self.engine._py3o_ensure_html_align_styles(plain), plain)
+
     def test_html_list_item_styles_injected(self):
         """Register a list item style per wrapper style with its font.
 

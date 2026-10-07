@@ -131,6 +131,19 @@ _LONG_RUN_CHUNK = 20
 _LONG_RUN_RE = re.compile(r"\S{%d,}" % (_LONG_RUN_CHUNK + 1))
 _ZERO_WIDTH_SPACE = "​"
 
+# A 1pt text style and the span that uses it. A paragraph that the escape
+# blocks leave behind at the very start or end of the content holds only this
+# span (one zero-width space), so its line is as tall as 1pt text instead of a
+# full line of the wrapper paragraph's font. Registered by
+# _py3o_ensure_html_align_styles() on every template that calls
+# get_html_text. (``text:hidden-paragraph`` was tried and LibreOffice
+# ignores it.)
+_HTML_TINY_STYLE_NAME = "OdooHtmlTiny"
+_HTML_TINY_SPAN = '<text:span text:style-name="%s">%s</text:span>' % (
+    _HTML_TINY_STYLE_NAME,
+    _ZERO_WIDTH_SPACE,
+)
+
 # table-cell automatic style injected by _py3o_ensure_html_table_style() so
 # _get_html_text_table()'s cells render with a visible border -- see that
 # method's docstring for why it cannot simply be a style already present in
@@ -1702,6 +1715,25 @@ class Py3oReport(models.TransientModel):
                 props.set(_clark("fo", attr), "%gpt" % value)
         return style
 
+    def _py3o_add_html_tiny_style(self, auto_styles):
+        """Add the 1pt text style used by ``_HTML_TINY_SPAN`` if missing.
+
+        :param auto_styles: the ``office:automatic-styles`` element
+        :return: None
+        """
+        if self._find_style_by_name(auto_styles, _HTML_TINY_STYLE_NAME) is not None:
+            return
+        tiny = etree.SubElement(auto_styles, _clark("style", "style"))
+        tiny.set(_clark("style", "name"), _HTML_TINY_STYLE_NAME)
+        tiny.set(_clark("style", "family"), "text")
+        tiny_props = etree.SubElement(tiny, _clark("style", "text-properties"))
+        for prefix, attr in (
+            ("fo", "font-size"),
+            ("style", "font-size-asian"),
+            ("style", "font-size-complex"),
+        ):
+            tiny_props.set(_clark(prefix, attr), "1pt")
+
     def _py3o_ensure_html_align_styles(self, report_bytes, para_styles=()):
         """Inject the paragraph-alignment styles ``get_html_text`` needs.
 
@@ -1719,6 +1751,9 @@ class Py3oReport(models.TransientModel):
 
         Failure is non-fatal, like the other ``_py3o_ensure_*``
         methods: an unreadable template is returned unchanged.
+
+        The 1pt text style ``_HTML_TINY_STYLE_NAME`` is registered too,
+        on every template that has such a placeholder.
 
         Each ``(odf_align, margins)`` pair of ``para_styles`` (see
         ``_py3o_collect_html_paragraph_styles``) is registered the same
@@ -1775,6 +1810,7 @@ class Py3oReport(models.TransientModel):
                 auto_styles.append(
                     self._py3o_html_list_item_style_element(auto_styles, base_style)
                 )
+        self._py3o_add_html_tiny_style(auto_styles)
         combos = [(odf_align, None) for odf_align in _HTML_ALIGN_ODF_KEYS]
         combos.extend(sorted(para_styles, key=repr))
         for base_style in [None] + sorted(base_styles):
@@ -2388,12 +2424,20 @@ class Py3oReport(models.TransientModel):
         See ``_get_html_text``'s docstring for why a join next to a
         table/list block (one starting with ``</text:span></text:p>``
         or ending with ``<text:p><text:span>``) must not add a
-        ``<text:line-break/>``. Two aligned blocks in a row are merged
-        into consecutive paragraphs instead of joined through the
-        close/reopen escape, which would leave an empty paragraph --
-        a visible blank line -- between them. An aligned block that
-        ends the content keeps its paragraph open so the template's own
-        closing tags end it, rather than leaving an empty one behind.
+        ``<text:line-break/>``. Two escaped blocks in a row (list,
+        table, aligned or margined paragraph) are merged into adjacent
+        blocks: the first block's reopen marker and the second block's
+        close marker are both dropped, since joining them through the
+        close/reopen escape would leave an empty paragraph -- a visible
+        blank line -- between them. An aligned block that ends the
+        content keeps its paragraph open so the template's own closing
+        tags end it, rather than leaving an empty one behind.
+
+        When the content starts with an escaped block, the wrapper
+        paragraph is left holding nothing; a 1pt span with a zero-width
+        space (``_HTML_TINY_SPAN``) is put in it so it takes the height
+        of 1pt text rather than a full line. Content ending in a list
+        or table gets the same span in its last reopened paragraph.
 
         :param blocks: block strings from ``_get_html_text_blocks``
         :return: the blocks joined into one string
@@ -2403,21 +2447,21 @@ class Py3oReport(models.TransientModel):
         parts = []
         for index, block in enumerate(blocks):
             if index > 0:
-                prev = blocks[index - 1]
-                if self._is_aligned_html_block(prev) and self._is_aligned_html_block(
-                    block
-                ):
+                prev_is_escaped = blocks[index - 1].endswith(suffix)
+                this_is_escaped = block.startswith(_ESCAPE_BLOCK_PREFIX)
+                if prev_is_escaped and this_is_escaped:
                     parts[-1] = parts[-1][: -len(suffix)]
                     block = block[len(_ESCAPE_BLOCK_PREFIX) :]
-                else:
-                    prev_is_escaped = prev.endswith(suffix)
-                    this_is_escaped = block.startswith(_ESCAPE_BLOCK_PREFIX)
-                    if not prev_is_escaped and not this_is_escaped:
-                        parts.append("<text:line-break/>")
+                elif not prev_is_escaped and not this_is_escaped:
+                    parts.append("<text:line-break/>")
             parts.append(block)
+        if blocks and blocks[0].startswith(_ESCAPE_BLOCK_PREFIX):
+            parts[0] = _HTML_TINY_SPAN + parts[0]
         if blocks and self._is_aligned_html_block(blocks[-1]):
             align_end = "</text:p>%s" % suffix
             parts[-1] = parts[-1][: -len(align_end)] + "<text:span>"
+        elif blocks and blocks[-1].endswith(suffix):
+            parts[-1] += _HTML_TINY_SPAN
         return "".join(parts)
 
     def _is_aligned_html_block(self, block):
