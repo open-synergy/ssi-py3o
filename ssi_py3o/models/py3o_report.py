@@ -2202,7 +2202,10 @@ class Py3oReport(models.TransientModel):
         :param el: ``lxml.html`` element
         :return: ``(top, bottom, left, right, text_indent)`` in points,
             each ``None`` when not given, or ``None`` when ``el`` is
-            not a ``p`` or gives none of them
+            not a ``p``, gives none of them, or gives only zeros (a
+            paragraph with no spacing is a plain paragraph, joined by a
+            line break like any other). A zero is kept when another
+            value is not zero.
         :rtype: tuple or None
         """
         if el.tag != "p":
@@ -2219,7 +2222,7 @@ class Py3oReport(models.TransientModel):
                 points = self._html_css_length_to_pt(value.replace("!important", ""))
                 if points is not None:
                     values[name] = points
-        if not values:
+        if not any(values.values()):
             return None
         return tuple(values.get(name) for name in _HTML_MARGIN_PROPS)
 

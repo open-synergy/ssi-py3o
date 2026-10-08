@@ -510,7 +510,9 @@ class TestHtmlText(YamlTransactionCase):
         of ``_get_html_text``, not a record side effect).
         """
         result = self.engine._get_html_text('<p style="TEXT-ALIGN :JUSTIFY">x</p>')
-        self.assertEqual(self._style_names(result), ["OdooHtmlAlignJustify"])
+        self.assertEqual(
+            self._style_names(result), ["OdooHtmlTiny", "OdooHtmlAlignJustify"]
+        )
 
     def test_align_attribute_and_style_precedence(self):
         """Honour the legacy ``align`` attribute; ``style`` wins over it.
@@ -519,11 +521,13 @@ class TestHtmlText(YamlTransactionCase):
         of ``_get_html_text``, not a record side effect).
         """
         only_attr = self.engine._get_html_text('<p align="center">x</p>')
-        self.assertEqual(self._style_names(only_attr), ["OdooHtmlAlignCenter"])
+        self.assertEqual(
+            self._style_names(only_attr), ["OdooHtmlTiny", "OdooHtmlAlignCenter"]
+        )
         both = self.engine._get_html_text(
             '<p style="text-align: right" align="center">x</p>'
         )
-        self.assertEqual(self._style_names(both), ["OdooHtmlAlignEnd"])
+        self.assertEqual(self._style_names(both), ["OdooHtmlTiny", "OdooHtmlAlignEnd"])
 
     def test_aligned_block_is_split_at_br(self):
         """Turn ``<p>title<br>body</p>`` into two aligned paragraphs.
@@ -567,7 +571,9 @@ class TestHtmlText(YamlTransactionCase):
         of ``_get_html_text``, not a record side effect).
         """
         result = self.engine._get_html_text('<h2 style="text-align: center">Judul</h2>')
-        self.assertEqual(self._style_names(result)[0], "OdooHtmlAlignCenter")
+        self.assertEqual(
+            self._style_names(result)[:2], ["OdooHtmlTiny", "OdooHtmlAlignCenter"]
+        )
         self.assertIn("OdooH2", self._style_names(result))
 
     def test_base_style_selects_wrapper_specific_style(self):
@@ -579,7 +585,9 @@ class TestHtmlText(YamlTransactionCase):
         result = self.engine._get_html_text(
             '<p style="text-align: justify">x</p>', base_style="P7"
         )
-        self.assertEqual(self._style_names(result), ["OdooHtmlAlignJustify_P7"])
+        self.assertEqual(
+            self._style_names(result), ["OdooHtmlTiny", "OdooHtmlAlignJustify_P7"]
+        )
 
     def test_aligned_paragraph_next_to_table_and_list(self):
         """Leave a table and a list beside aligned paragraphs untouched.
@@ -935,7 +943,7 @@ class TestHtmlText(YamlTransactionCase):
             )
         )
         name = "OdooHtmlAlignInherit_mt6_ml16_5_tin14_5_P7"
-        self.assertIn('<text:p text:style-name="%s">butir</text:p>' % name, result)
+        self.assertIn('<text:p text:style-name="%s">butir<text:span>' % name, result)
         self.assertEqual(
             self._paragraph_style_props(None, "P7", (6.0, None, 16.5, None, -14.5)),
             {"margin-top": "6pt", "margin-left": "16.5pt", "text-indent": "-14.5pt"},
@@ -991,7 +999,7 @@ class TestHtmlText(YamlTransactionCase):
                 '<p style="text-align:justify;margin-left:16.5pt">x</p>'
             )
         )
-        self.assertEqual(result.count("<text:p text:style-name="), 2)
+        self.assertEqual(result.count("<text:p text:style-name="), 1)
         self.assertIn('text:style-name="OdooHtmlAlignJustify_ml16_5">x', result)
         self.assertEqual(
             self._paragraph_style_props(
@@ -1029,7 +1037,9 @@ class TestHtmlText(YamlTransactionCase):
 
         A ``<p>`` without the new properties, ``\u00b7`` outside a
         Symbol font and a non-numeric margin render as before;
-        ``margin-bottom:0`` alone gives a zero bottom margin.
+        ``margin-bottom:0`` beside a non-zero margin keeps its zero
+        (alone it is a plain paragraph, see
+        ``test_all_zero_margins_make_a_plain_paragraph``).
 
         Pure Python -- trigger P1 (L-01: asserting the return value
         of ``_get_html_text``, not a record side effect).
@@ -1038,11 +1048,17 @@ class TestHtmlText(YamlTransactionCase):
         self.assertEqual(plain, "a \u00b7 b")
         self.assertIsNone(self._margins("margin-left:auto"))
         self.assertIsNone(self._margins("line-height:12pt"))
+        self.assertIsNone(self._margins("margin-bottom:0"))
         self.assertEqual(
-            self._margins("margin-bottom:0"), (None, 0.0, None, None, None)
+            self._margins("margin-bottom:0;margin-left:16.5pt"),
+            (None, 0.0, 16.5, None, None),
         )
-        zero = str(self.engine._get_html_text('<p style="margin-bottom:0cm">z</p>'))
-        self.assertIn('text:style-name="OdooHtmlAlignInherit_mb0"', zero)
+        zero = str(
+            self.engine._get_html_text(
+                '<p style="margin-bottom:0cm;margin-left:16.5pt">z</p>'
+            )
+        )
+        self.assertIn('text:style-name="OdooHtmlAlignInherit_mb0_ml16_5"', zero)
         self.assertEqual(
             self._paragraph_style_props(None, None, (None, 0.0, None, None, None)),
             {"margin-bottom": "0pt"},
@@ -1232,3 +1248,76 @@ class TestHtmlText(YamlTransactionCase):
             self.engine._get_html_text("<p>a</p><p>b</p>" + table + table + "<p>c</p>")
         )
         self.assertEqual(result.count("<text:line-break/>"), 1)
+
+    _ZERO_STYLES = (
+        "margin:0",
+        "margin:0px",
+        "margin-top:0;margin-bottom:0",
+        "margin:0cm; margin-bottom:.0001pt",
+    )
+
+    def test_all_zero_margins_make_a_plain_paragraph(self):
+        """Render a ``<p>`` whose spacing is all zero as a plain paragraph.
+
+        With and without ``base_style`` no ``OdooHtmlAlign*`` style is
+        used and the text stays inline, joined to its neighbours by a
+        line break; the margin reader gives ``None``.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        for style in self._ZERO_STYLES:
+            self.assertIsNone(self._margins(style))
+            for base_style in (None, "P7"):
+                with self.subTest(style=style, base=base_style):
+                    result = str(
+                        self.engine._get_html_text(
+                            '<p style="%s">x</p><p style="%s">y</p>' % (style, style),
+                            base_style=base_style,
+                        )
+                    )
+                    self.assertEqual(result, "x<text:line-break/>y")
+
+    def test_zero_margin_with_align_stays_an_aligned_block(self):
+        """Keep ``margin:0`` plus ``text-align`` an aligned block.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        result = str(
+            self.engine._get_html_text('<p style="margin:0;text-align: justify">x</p>')
+        )
+        self.assertIn('text:style-name="OdooHtmlAlignJustify">x', result)
+
+    def test_zero_beside_non_zero_margin_keeps_the_zero(self):
+        """Keep an explicit zero when another margin is not zero.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text``, not a record side effect).
+        """
+        style = "margin-top:0;margin-bottom:0;margin-left:16.5pt"
+        result = str(self.engine._get_html_text('<p style="%s">x</p>' % style))
+        self.assertIn('text:style-name="OdooHtmlAlignInherit_mt0_mb0_ml16_5">x', result)
+        self.assertEqual(self._margins(style), (0.0, 0.0, 16.5, None, None))
+
+    def test_collect_paragraph_styles_skips_all_zero_margins(self):
+        """Leave all-zero margins out of the registered paragraph styles.
+
+        Pure Python -- trigger P1 (L-01: asserting the return value
+        of ``_get_html_text_paragraph_styles``, not a record side
+        effect).
+        """
+        for style in self._ZERO_STYLES:
+            with self.subTest(style=style):
+                self.assertEqual(
+                    self.engine._get_html_text_paragraph_styles(
+                        '<p style="%s">x</p>' % style
+                    ),
+                    set(),
+                )
+        self.assertEqual(
+            self.engine._get_html_text_paragraph_styles(
+                '<p style="margin-top:0;margin-left:16.5pt">x</p>'
+            ),
+            {(None, (0.0, None, 16.5, None, None))},
+        )
