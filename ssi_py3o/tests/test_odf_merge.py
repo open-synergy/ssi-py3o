@@ -639,6 +639,36 @@ class TestOdfMerge(TransactionCase):
         self.assertEqual(plain_sizes, set())
         self.assertEqual(heading_sizes, set())
 
+    def test_collect_and_inject_paragraph_margin_styles(self):
+        """Collect margin combos from a record and inject matching styles.
+
+        The names injected into the template are the ones
+        ``_html_align_style_name`` gives the render, for the wrapper
+        style and for the generic case.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_collect_html_font_sizes_from_record`` above).
+        """
+        template = self.env["mail.template"].create(
+            {
+                "name": "ssi_py3o margin scan test",
+                "body_html": (
+                    '<p style="margin-left:16.55pt;text-indent:-14.4pt;'
+                    'margin-top:6pt">a</p><p>plain</p>'
+                ),
+            }
+        )
+        combos = self.engine._py3o_collect_html_paragraph_styles(template)
+        self.assertEqual(combos, {(None, (6.0, None, 16.5, None, -14.5))})
+        result = self.engine._py3o_ensure_html_align_styles(
+            self._placeholder_odt(), combos
+        )
+        root = self._content_of(result)
+        auto_styles = root.find(_q("office", "automatic-styles"))
+        names = {c.get(_q("style", "name")) for c in auto_styles}
+        self.assertIn("OdooHtmlAlignInherit_mt6_ml16_5_tin14_5_P7", names)
+        self.assertIn("OdooHtmlAlignInherit_mt6_ml16_5_tin14_5", names)
+
     # -- helpers --------------------------------------------------------------
 
     def _create_template(self, name, filetype, template_data):
@@ -766,3 +796,67 @@ class TestOdfMerge(TransactionCase):
         self.assertEqual(
             self.engine._py3o_ensure_html_align_styles(b"not a zip"), b"not a zip"
         )
+
+    def test_html_tiny_style_registered(self):
+        """Register the 1pt text style on a template with a placeholder.
+
+        The style is a text style of 1pt, is added once, and a template
+        without a ``get_html_text`` placeholder does not get it.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        once = self.engine._py3o_ensure_html_align_styles(self._placeholder_odt())
+        twice = self.engine._py3o_ensure_html_align_styles(once)
+        for result in (once, twice):
+            auto_styles = self._content_of(result).find(
+                _q("office", "automatic-styles")
+            )
+            tiny = [
+                c for c in auto_styles if c.get(_q("style", "name")) == "OdooHtmlTiny"
+            ]
+            self.assertEqual(len(tiny), 1)
+            self.assertEqual(tiny[0].get(_q("style", "family")), "text")
+            self.assertEqual(
+                tiny[0].find(_q("style", "text-properties")).get(_q("fo", "font-size")),
+                "1pt",
+            )
+        plain = content_odt()
+        self.assertEqual(self.engine._py3o_ensure_html_align_styles(plain), plain)
+
+    def test_html_list_item_styles_injected(self):
+        """Register a list item style per wrapper style with its font.
+
+        An automatic wrapper's text properties and parent are copied,
+        its margins and page break are not; a common wrapper becomes
+        the parent instead.
+
+        Pure Python -- trigger P8 (L-01, L-19: same as
+        ``test_html_table_style_injected`` above).
+        """
+        result = self.engine._py3o_ensure_html_align_styles(self._placeholder_odt())
+        auto_styles = self._content_of(result).find(_q("office", "automatic-styles"))
+        by_name = {c.get(_q("style", "name")): c for c in auto_styles}
+        item = by_name["OdooListItem_P7"]
+        self.assertEqual(item.get(_q("style", "family")), "paragraph")
+        self.assertEqual(item.get(_q("style", "parent-style-name")), "Standard")
+        self.assertEqual(
+            item.find(_q("style", "text-properties")).get(_q("fo", "font-size")),
+            "10pt",
+        )
+        self.assertIsNone(item.find(_q("style", "paragraph-properties")))
+        source = content_odt(
+            "",
+            '<text:p text:style-name="Standard"><text:text-input '
+            'text:description="py3o://function=&quot;get_html_text(o.a)'
+            '&quot;">a</text:text-input></text:p>',
+        )
+        auto_styles = self._content_of(
+            self.engine._py3o_ensure_html_align_styles(source)
+        ).find(_q("office", "automatic-styles"))
+        common = next(
+            c
+            for c in auto_styles
+            if c.get(_q("style", "name")) == "OdooListItem_Standard"
+        )
+        self.assertEqual(common.get(_q("style", "parent-style-name")), "Standard")
