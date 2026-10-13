@@ -11,14 +11,14 @@ scenarios:
         values:
           name: "Include Template"
           filetype: "odt"
-          include_code: "worksheet_identity"
+          include_code: "test_include_code"
       - step: "Assert include code is stored"
         action: "assert"
         target: "template"
         asserts:
           include_code:
             type: "value"
-            expected: "worksheet_identity"
+            expected: "test_include_code"
 
   - name: "include_code — duplicate code is rejected"
     steps:
