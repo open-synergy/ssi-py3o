@@ -208,3 +208,48 @@ def content_odt(auto_styles_inner="", body_inner=""):
         "</office:document-content>"
     ) % (_CONTENT_XML_NSMAP, auto_styles_inner, body_inner)
     return _build_odt(REPORT_STYLES_XML, content_xml=content_xml.encode("utf-8"))
+
+
+_BODY_NSMAP = (
+    'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+    'xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" '
+    'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" '
+    'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" '
+    'xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" '
+    'xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" '
+    'xmlns:xlink="http://www.w3.org/1999/xlink" '
+    'xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"'
+)
+
+
+def body_odt(
+    body_inner="",
+    auto_styles_inner="",
+    common_styles_inner="",
+    font_decls_inner="",
+    extra_files=None,
+):
+    """Build an .odt whose ``office:text`` holds ``body_inner``.
+
+    Used to craft report templates (with include markers) and sub-templates
+    (with styles, fonts and pictures). ``auto_styles_inner`` goes into the
+    ``content.xml`` automatic styles, ``common_styles_inner`` into the
+    ``styles.xml`` common styles and ``font_decls_inner`` into the
+    ``styles.xml`` font face declarations. The page layout and master page
+    are those of ``REPORT_STYLES_XML``.
+    """
+    styles_xml = REPORT_STYLES_XML.replace(
+        "</office:styles>", common_styles_inner + "</office:styles>"
+    ).replace(
+        "</office:font-face-decls>", font_decls_inner + "</office:font-face-decls>"
+    )
+    content_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<office:document-content %s>"
+        "<office:automatic-styles>%s</office:automatic-styles>"
+        "<office:body><office:text>%s</office:text></office:body>"
+        "</office:document-content>"
+    ) % (_BODY_NSMAP, auto_styles_inner, body_inner)
+    return _build_odt(
+        styles_xml, extra_files=extra_files, content_xml=content_xml.encode("utf-8")
+    )

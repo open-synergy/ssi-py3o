@@ -373,6 +373,7 @@ class Py3oReport(models.TransientModel):
 
     def get_template(self, model_instance):
         report_bytes = super().get_template(model_instance)
+        report_bytes = self._py3o_apply_includes(report_bytes)
         report_bytes = self._py3o_ensure_html_table_style(report_bytes)
         plain_sizes, heading_sizes = self._py3o_collect_html_font_sizes(model_instance)
         report_bytes = self._py3o_ensure_html_text_styles(

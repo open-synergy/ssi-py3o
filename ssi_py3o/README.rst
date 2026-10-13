@@ -59,6 +59,40 @@ If the base template is corrupted, or the merge fails for any other reason, the
 report is still printed **without** the letterhead (fail-open) and the error is
 logged — a broken letterhead never blocks invoicing/printing.
 
+Configuration — Sub-template include
+====================================
+
+A block shared by many reports (for example an identity block at the top of the
+body) can be kept in one ``py3o.template`` and inserted into any py3o ODT report.
+
+1. Upload the block as an ODT ``py3o.template`` and fill its *Include Code*
+   (unique, ``[a-z][a-z0-9_]*``).
+2. In the report ``.odt``, put a paragraph that contains nothing but
+   ``[[py3o_include:<code>]]``. It may sit inside a table cell or a section and may
+   be split into several spans by the editor. The whole paragraph is replaced by the
+   body of the sub-template.
+
+Editing the sub-template changes every report that includes it; the report
+``.odt`` files are never touched. Only ODT report templates are scanned (ODS is
+ignored).
+
+Writing a sub-template
+----------------------
+
+* The sub-template runs in the py3o context of the **calling** report. It may use
+  the report loop variable ``o``, so the marker must be inside the report's
+  ``for each="o in objects"`` loop.
+* A sub-template must not open a loop or condition it does not close itself.
+* ``py3o://`` directives and ``py3o.image(...)`` frames are copied untouched.
+* Styles, font faces and ``Pictures/*`` are imported with the prefix
+  ``inc_<code>_``, so they never overwrite a report style of the same name.
+* Declarative elements (``text:sequence-decls`` etc.) are not copied.
+* Nested includes (a marker inside a sub-template) are not supported.
+
+Unlike the letterhead, the include **fails closed**: an unknown code, a
+sub-template that is not a valid ODT, or a nested marker raises a ``UserError``
+naming the report and the code, and the report is not printed.
+
 
 Bug Tracker
 ===========

@@ -1,0 +1,54 @@
+options:
+  auto_refresh: true
+
+scenarios:
+  - name: "include_code — valid and unique code is stored"
+    steps:
+      - step: "Create template with a valid include code"
+        action: "create"
+        model: "py3o.template"
+        save_as: "template"
+        values:
+          name: "Include Template"
+          filetype: "odt"
+          include_code: "worksheet_identity"
+      - step: "Assert include code is stored"
+        action: "assert"
+        target: "template"
+        asserts:
+          include_code:
+            type: "value"
+            expected: "worksheet_identity"
+
+  - name: "include_code — duplicate code is rejected"
+    steps:
+      - step: "Create first template"
+        action: "create"
+        model: "py3o.template"
+        values:
+          name: "Include Template 1"
+          filetype: "odt"
+          include_code: "dup_code"
+      - step: "Create second template with the same code"
+        action: "create"
+        model: "py3o.template"
+        expect_error:
+          type: "ValidationError"
+          message_contains: "already used"
+        values:
+          name: "Include Template 2"
+          filetype: "odt"
+          include_code: "dup_code"
+
+  - name: "include_code — invalid format is rejected"
+    steps:
+      - step: "Create template with an uppercase code"
+        action: "create"
+        model: "py3o.template"
+        expect_error:
+          type: "ValidationError"
+          message_contains: "invalid format"
+        values:
+          name: "Include Template 3"
+          filetype: "odt"
+          include_code: "Bad-Code"
