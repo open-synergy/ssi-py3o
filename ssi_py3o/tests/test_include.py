@@ -39,7 +39,7 @@ def _q(prefix, local):
 
 MARKER = '<text:p text:style-name="P1">[[py3o_include:ident]]</text:p>'
 SPLIT_MARKER = (
-    "<text:p><text:span>[[py3o_</text:span> "
+    "<text:p><text:span>[[py3o_</text:span>"
     "<text:span>include:ident]]</text:span></text:p>"
 )
 FRAGMENT_BODY = '<text:p text:style-name="P1">IDENTITY BLOCK</text:p>'
