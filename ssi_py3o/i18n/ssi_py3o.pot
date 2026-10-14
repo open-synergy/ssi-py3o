@@ -14,6 +14,77 @@ msgstr ""
 "Plural-Forms: \n"
 
 #. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid ""
+"\n"
+"Context: Insert py3o sub-report into report '%s'\n"
+"Database ID: %s\n"
+"Problem: %s (sub-report '%s')\n"
+"Solution: %s\n"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid ""
+"\n"
+"Context: Insert py3o sub-template into report '%s'\n"
+"Database ID: %s\n"
+"Problem: %s (include code '%s')\n"
+"Solution: %s\n"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_template.py:0
+#, python-format
+msgid ""
+"\n"
+"Context: Set include code of py3o template\n"
+"Database ID: %s\n"
+"Problem: Include code '%s' has an invalid format\n"
+"Solution: Use only lowercase letters, digits and underscore, starting with a letter\n"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_template.py:0
+#, python-format
+msgid ""
+"\n"
+"Context: Set include code of py3o template\n"
+"Database ID: %s\n"
+"Problem: Include code '%s' is already used by another template\n"
+"Solution: Choose an include code that is not used yet\n"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_template.py:0
+#, python-format
+msgid ""
+"\n"
+"Problem: Include code '%s' is already used by template '%s'\n"
+"Solution: Choose an include code that is not used yet\n"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "A sub-report cannot call another sub-report"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "Ask an administrator for access to the sub-report"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "Check the template of the calling report"
+msgstr ""
+
+#. module: ssi_py3o
 #: model:ir.model,name:ssi_py3o.model_res_company
 msgid "Companies"
 msgstr ""
@@ -36,15 +107,32 @@ msgstr ""
 #. module: ssi_py3o
 #: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report__display_name
 #: model:ir.model.fields,field_description:ssi_py3o.field_py3o_report__display_name
+#: model:ir.model.fields,field_description:ssi_py3o.field_py3o_template__display_name
 #: model:ir.model.fields,field_description:ssi_py3o.field_res_company__display_name
 msgid "Display Name"
 msgstr ""
 
 #. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "Fix the report name in the subreport() call"
+msgstr ""
+
+#. module: ssi_py3o
 #: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report__id
 #: model:ir.model.fields,field_description:ssi_py3o.field_py3o_report__id
+#: model:ir.model.fields,field_description:ssi_py3o.field_py3o_template__id
 #: model:ir.model.fields,field_description:ssi_py3o.field_res_company__id
 msgid "ID"
+msgstr ""
+
+#. module: ssi_py3o
+#: model:ir.model.fields,help:ssi_py3o.field_py3o_template__include_code
+msgid ""
+"Identifier that makes this ODT template insertable into the body of other "
+"py3o ODT reports. A report pulls it in with a paragraph that contains only "
+"the py3o function field subtemplate('<code>'). Must be unique and match "
+"[a-z][a-z0-9_]*. Leave empty if the template is not meant to be inserted."
 msgstr ""
 
 #. module: ssi_py3o
@@ -55,8 +143,20 @@ msgid ""
 msgstr ""
 
 #. module: ssi_py3o
+#: model:ir.model.fields,field_description:ssi_py3o.field_py3o_template__include_code
+msgid "Include Code"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_template.py:0
+#, python-format
+msgid "Include code already used"
+msgstr ""
+
+#. module: ssi_py3o
 #: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report____last_update
 #: model:ir.model.fields,field_description:ssi_py3o.field_py3o_report____last_update
+#: model:ir.model.fields,field_description:ssi_py3o.field_py3o_template____last_update
 #: model:ir.model.fields,field_description:ssi_py3o.field_res_company____last_update
 msgid "Last Modified on"
 msgstr ""
@@ -69,8 +169,26 @@ msgid "Location"
 msgstr ""
 
 #. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "Nested includes are not supported; remove the marker"
+msgstr ""
+
+#. module: ssi_py3o
 #: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report__py3o_no_base_template
 msgid "No Base Template"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "No py3o report has this name"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "No py3o template has this include code"
 msgstr ""
 
 #. module: ssi_py3o
@@ -78,6 +196,12 @@ msgstr ""
 msgid ""
 "ODT template whose header/footer is merged into this report when rendered. "
 "Leave empty to fall back to the company's 'Py3o Base Template (Letterhead)'."
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "Only ODT reports can be inserted as sub-report"
 msgstr ""
 
 #. module: ssi_py3o
@@ -108,10 +232,28 @@ msgid "Parser location"
 msgstr ""
 
 #. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "Pass a recordset of the model of the sub-report"
+msgstr ""
+
+#. module: ssi_py3o
 #: model:ir.model.fields,help:ssi_py3o.field_ir_actions_report__parser_loc
 msgid ""
 "Path to the parser location. Beginning of the path must be start               with the module name!\n"
 " Like this: {module name}/{path to the               parser.py file}"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "Put the content to insert in the sub-template body"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "Put the subreport() field in a paragraph of its own"
 msgstr ""
 
 #. module: ssi_py3o
@@ -135,10 +277,29 @@ msgid "Py3o Template Is ODT"
 msgstr ""
 
 #. module: ssi_py3o
+#: model:ir.model,name:ssi_py3o.model_py3o_template
+msgid "Py3o template"
+msgstr ""
+
+#. module: ssi_py3o
 #: model:ir.model.fields,help:ssi_py3o.field_ir_actions_report__parser_code
 msgid ""
 "Python code defined as parser. Must define a 'Parser' class with "
 "__init__(self, env, docs)"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "Re-upload a valid ODT file to the sub-template"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "Remove the subreport() call from the sub-report template"
 msgstr ""
 
 #. module: ssi_py3o
@@ -161,6 +322,12 @@ msgid ""
 msgstr ""
 
 #. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "Set the include code on the sub-template or fix the marker"
+msgstr ""
+
+#. module: ssi_py3o
 #: model:ir.model.fields,field_description:ssi_py3o.field_ir_actions_report__parser_state
 msgid "State of Parser"
 msgstr ""
@@ -178,4 +345,100 @@ msgid ""
 "used by this report is an ODT (zipped ODF text) package. Base template merge"
 " only applies when this is True: 'fodt' (flat XML) is not a zip package, so "
 "it is never considered ODT here."
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "The calling report is not an ODT file"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "The rendered report is a damaged ODT package"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "The sub-report prints '%s' but got '%s'"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "The sub-report template is not an ODT file"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "The sub-template body is empty"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "The sub-template contains another include marker"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "The sub-template has no text body"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "The sub-template is a damaged ODT package"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "The sub-template is not an ODT file with content"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "The sub-template references missing image %s"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "The subreport() call is not alone in its paragraph"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "The subtemplate() field is not valid"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "The user is not allowed to print this sub-report"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "Upload an ODT file to the sub-template"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_include.py:0
+#, python-format
+msgid "Use subtemplate('<code>') with a literal code, alone in its paragraph"
+msgstr ""
+
+#. module: ssi_py3o
+#: code:addons/ssi_py3o/models/py3o_report_subreport.py:0
+#, python-format
+msgid "subreport() works only in ODT report templates"
 msgstr ""
