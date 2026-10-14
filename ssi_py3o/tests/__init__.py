@@ -8,3 +8,4 @@ from . import test_html_text
 from . import test_include
 from . import test_include_code
 from . import test_odf_merge
+from . import test_subreport

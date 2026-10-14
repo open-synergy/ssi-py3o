@@ -97,6 +97,39 @@ that is not a literal code alone in its paragraph raises a ``UserError`` naming 
 report and the code, and the report is not printed.
 
 
+Configuration — Sub-report
+==========================
+
+A py3o ODT report can print the result of **another** py3o ODT report, with its
+own model, template and parser, without copying that report into its own
+template.
+
+In the calling report ``.odt``, put a paragraph that contains nothing but one py3o
+function field::
+
+    py3o://function="subreport('<report_name>', <recordset>)"
+
+``<report_name>`` is the ``report_name`` of the sub-report and ``<recordset>`` is any
+expression of the calling context that returns records of the model of the
+sub-report (for example ``o.invoice_ids``). The sub-report is rendered on its own,
+with those records as its ``objects``, and its body replaces the paragraph before
+the document is converted.
+
+* The call only records the request; the sub-report is rendered after the calling
+  report, so the field must be alone in its paragraph.
+* An empty recordset inserts nothing.
+* The letterhead, header/footer, page size and margins of the sub-report are not
+  carried over; only its body is.
+* Styles, font faces, pictures and the names of tables, frames and bookmarks of the
+  sub-report are imported with the prefix ``inc_sub<n>_``.
+* The user must belong to a group of the sub-report (when it has groups) and be
+  allowed to read the records.
+* A sub-report cannot call another sub-report, and only ODT reports can be inserted
+  or receive a sub-report.
+* Any failure raises a ``UserError`` (or ``AccessError``) naming the report and the
+  sub-report, and the report is not printed.
+
+
 Bug Tracker
 ===========
 

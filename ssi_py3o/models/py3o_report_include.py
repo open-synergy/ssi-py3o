@@ -33,6 +33,12 @@ _INCLUDE_SKIP_TAGS = (
     _clark("office", "forms"),
 )
 
+_OBJECT_NAME_ATTRS = (
+    _clark("table", "name"),
+    _clark("draw", "name"),
+    _clark("text", "name"),
+)
+
 _FONT_NAME_ATTRS = (
     _clark("style", "font-name"),
     _clark("style", "font-name-asian"),
@@ -317,6 +323,70 @@ Solution: %s
                     self._py3o_add_manifest_entry(manifest_root, target)
                 img.set(href_attr, target)
 
+    def _py3o_merge_fragment(
+        self, code, paras, blocks, fragment, roots, new_zip_entries, rename_names=False
+    ):
+        """Replace paragraphs by fragment blocks and import their resources.
+
+        Styles, font faces and pictures are imported with the prefix
+        ``inc_<code>_`` so they never overwrite a report resource.
+
+        :param code: include code, also the prefix seed
+        :param paras: paragraphs to replace
+        :param blocks: elements copied from the fragment body
+        :param fragment: tuple ``(zip, content_root, styles_root)`` of the
+            fragment package
+        :param roots: tuple ``(content_root, styles_root, manifest_root)`` of
+            the report, updated in place
+        :param new_zip_entries: dict of zip entries to add to the report
+        :param rename_names: also prefix ``table:name``, ``draw:name`` and
+            ``text:name`` of the inserted blocks so they stay unique
+        """
+        frag_zip, frag_content, frag_styles = fragment
+        content_root, styles_root, manifest_root = roots
+        common_tag = _clark("office", "styles")
+        auto_tag = _clark("office", "automatic-styles")
+        prefix = "inc_%s_" % code
+        seed = self._py3o_replace_markers(paras, blocks)
+        if rename_names:
+            for element in seed:
+                for node in element.iter():
+                    for attr in _OBJECT_NAME_ATTRS:
+                        if node.get(attr):
+                            node.set(attr, prefix + node.get(attr))
+        frag_auto = etree.Element(auto_tag)
+        for root in (frag_content, frag_styles):
+            container = root.find(auto_tag)
+            if container is not None:
+                frag_auto.extend(deepcopy(list(container)))
+        report_common = self._py3o_ensure_container(
+            styles_root,
+            common_tag,
+            (auto_tag, _clark("office", "master-styles")),
+        )
+        report_auto = self._py3o_ensure_container(
+            content_root, auto_tag, (_clark("office", "body"),)
+        )
+        import_map = self._py3o_build_style_import_map(
+            seed, frag_styles.find(common_tag), frag_auto
+        )
+        self._py3o_apply_style_imports(
+            import_map, report_common, report_auto, seed, prefix
+        )
+        font_names = self._py3o_import_include_fonts(
+            prefix, (frag_content, frag_styles), (content_root, styles_root)
+        )
+        imported = []
+        for name in import_map:
+            for container in (report_common, report_auto):
+                style = self._find_style_by_name(container, prefix + name)
+                if style is not None:
+                    imported.append(style)
+        self._py3o_rename_fonts(imported + seed, prefix, font_names)
+        self._py3o_import_include_images(
+            code, seed, frag_zip, new_zip_entries, manifest_root
+        )
+
     def _py3o_apply_includes(self, report_bytes):
         """Insert sub-templates at the markers of an ODT report template.
 
@@ -350,9 +420,8 @@ Solution: %s
             else:
                 by_code.append((code, [para]))
 
-        common_tag = _clark("office", "styles")
-        auto_tag = _clark("office", "automatic-styles")
         new_zip_entries = {}
+        roots = (content_root, styles_root, manifest_root)
         for code, paras in by_code:
             (
                 frag_zip,
@@ -360,40 +429,13 @@ Solution: %s
                 frag_styles,
                 blocks,
             ) = self._py3o_load_include_fragment(code)
-            prefix = "inc_%s_" % code
-            seed = self._py3o_replace_markers(paras, blocks)
-
-            frag_auto = etree.Element(auto_tag)
-            for root in (frag_content, frag_styles):
-                container = root.find(auto_tag)
-                if container is not None:
-                    frag_auto.extend(deepcopy(list(container)))
-            report_common = self._py3o_ensure_container(
-                styles_root,
-                common_tag,
-                (auto_tag, _clark("office", "master-styles")),
-            )
-            report_auto = self._py3o_ensure_container(
-                content_root, auto_tag, (_clark("office", "body"),)
-            )
-            import_map = self._py3o_build_style_import_map(
-                seed, frag_styles.find(common_tag), frag_auto
-            )
-            self._py3o_apply_style_imports(
-                import_map, report_common, report_auto, seed, prefix
-            )
-            font_names = self._py3o_import_include_fonts(
-                prefix, (frag_content, frag_styles), (content_root, styles_root)
-            )
-            imported = []
-            for name in import_map:
-                for container in (report_common, report_auto):
-                    style = self._find_style_by_name(container, prefix + name)
-                    if style is not None:
-                        imported.append(style)
-            self._py3o_rename_fonts(imported + seed, prefix, font_names)
-            self._py3o_import_include_images(
-                code, seed, frag_zip, new_zip_entries, manifest_root
+            self._py3o_merge_fragment(
+                code,
+                paras,
+                blocks,
+                (frag_zip, frag_content, frag_styles),
+                roots,
+                new_zip_entries,
             )
 
         new_zip_entries["content.xml"] = etree.tostring(
