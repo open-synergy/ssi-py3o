@@ -37,10 +37,17 @@ def _q(prefix, local):
     return "{%s}%s" % (NS[prefix], local)
 
 
-MARKER = '<text:p text:style-name="P1">[[py3o_include:ident]]</text:p>'
-SPLIT_MARKER = (
-    "<text:p><text:span>[[py3o_</text:span>"
-    "<text:span>include:ident]]</text:span></text:p>"
+def _field(call, tail=""):
+    """Return a py3o function field running ``call`` and an optional tail."""
+    return (
+        '<text:text-input text:description="py3o://function=&quot;%s&quot;">'
+        "X</text:text-input>%s" % (call, tail)
+    )
+
+
+MARKER = '<text:p text:style-name="P1">%s</text:p>' % _field("subtemplate('ident')")
+SPAN_MARKER = "<text:p><text:span>%s</text:span></text:p>" % _field(
+    "subtemplate('ident')"
 )
 FRAGMENT_BODY = '<text:p text:style-name="P1">IDENTITY BLOCK</text:p>'
 FRAGMENT_STYLE = (
@@ -57,7 +64,7 @@ REPORT_STYLE = (
 
 @tagged("post_install", "-at_install")
 class TestInclude(YamlTransactionCase):
-    """Cover the ``[[py3o_include:<code>]]`` sub-template engine."""
+    """Cover the ``subtemplate('<code>')`` sub-template engine."""
 
     def setUp(self):
         """Prepare helpers to create templates and a py3o report engine."""
@@ -138,15 +145,15 @@ class TestInclude(YamlTransactionCase):
         texts = self._texts(self._content(result))
         self.assertEqual(texts.count("IDENTITY BLOCK"), 2)
         self.assertIn("Tail", texts)
-        self.assertFalse([t for t in texts if "py3o_include" in t])
+        self.assertFalse([t for t in texts if "subtemplate" in t])
 
-    def test_split_spans_marker(self):
-        """Detect a marker split over several spans.
+    def test_span_marker(self):
+        """Detect a marker field wrapped in a span.
 
         Pure Python, trigger P4 and P8 (L-05, L-07, L-08, L-19).
         """
         self._create_fragment()
-        result = self._apply(body_odt(body_inner=SPLIT_MARKER))
+        result = self._apply(body_odt(body_inner=SPAN_MARKER))
         texts = self._texts(self._content(result))
         self.assertEqual(texts, ["IDENTITY BLOCK"])
 
@@ -318,6 +325,33 @@ class TestInclude(YamlTransactionCase):
             self._apply(body_odt(body_inner=MARKER))
         self.assertIn("Worksheet Report", str(caught.exception))
         self.assertIn("ident", str(caught.exception))
+
+    def test_invalid_field(self):
+        """Fail closed on a subtemplate() field that is not a literal code.
+
+        Pure Python, trigger P4 and P8 (L-05, L-07, L-08, L-19).
+        """
+        self._create_fragment()
+        invalid = (
+            "<text:p>%s</text:p>" % _field("subtemplate(o.code)"),
+            "<text:p>Before %s</text:p>" % _field("subtemplate('ident')"),
+            "<text:p>%s</text:p>"
+            % (_field("subtemplate('ident')") + _field("subtemplate('ident')")),
+        )
+        for marker in invalid:
+            with self.assertRaises(UserError) as caught:
+                self._apply(body_odt(body_inner=marker))
+            self.assertIn("Worksheet Report", str(caught.exception))
+
+    def test_double_quoted_code(self):
+        """Accept a code written between double quotes.
+
+        Pure Python, trigger P4 and P8 (L-05, L-07, L-08, L-19).
+        """
+        self._create_fragment()
+        marker = "<text:p>%s</text:p>" % _field("subtemplate(&quot;ident&quot;)")
+        result = self._apply(body_odt(body_inner=marker))
+        self.assertEqual(self._texts(self._content(result)), ["IDENTITY BLOCK"])
 
     def test_ods_report_untouched(self):
         """Leave an ODS report that contains marker text alone.

@@ -15,7 +15,11 @@ from odoo.exceptions import UserError
 
 from .py3o_report import ODT_MIMETYPE, _clark
 
-_INCLUDE_MARKER_RE = re.compile(r"\[\[py3o_include:([^\]]*)\]\]")
+_INCLUDE_CALL_RE = re.compile(r"subtemplate\s*\(")
+_INCLUDE_FIELD_RE = re.compile(
+    r"""py3o://function\s*=\s*(["'])\s*subtemplate\(\s*"""
+    r"""(?:'([^']*)'|"([^"]*)")\s*\)\s*\1""",
+)
 
 # Declarative children of <office:text> that belong to the document as a whole;
 # they are never copied from a sub-template into the report.
@@ -40,7 +44,8 @@ class Py3oReport(models.TransientModel):
     _inherit = "py3o.report"
 
     # -- Sub-template include ------------------------------------------------
-    # Replaces a paragraph holding only "[[py3o_include:<code>]]" in the body
+    # Replaces a paragraph holding only the field
+    # py3o://function="subtemplate('<code>')" in the body
     # of an ODT report template by the body of the py3o.template whose
     # include_code is <code>. Unlike the letterhead merge it fails closed.
     # See README.rst for the contract a sub-template author must follow.
@@ -67,21 +72,67 @@ Solution: %s
         )
         raise UserError(error_message)
 
+    def _py3o_text_outside_inputs(self, para):
+        """Return the text of ``para`` left out of its ``text:text-input``.
+
+        :param para: ``text:p`` element
+        :return: the paragraph text without the text of any ``text-input``
+        """
+        input_tag = _clark("text", "text-input")
+        parts = [para.text or ""]
+        stack = [(para, iter(para))]
+        while stack:
+            _node, children = stack[-1]
+            try:
+                child = next(children)
+            except StopIteration:
+                stack.pop()
+                continue
+            if child.tag != input_tag:
+                parts.append(child.text or "")
+                stack.append((child, iter(child)))
+            parts.append(child.tail or "")
+        return "".join(parts)
+
     def _py3o_find_include_markers(self, root):
         """Find the include marker paragraphs below ``root``.
 
-        A marker is a ``text:p`` whose whole text, with every ``text:span``
-        joined and stripped, is exactly ``[[py3o_include:<code>]]``.
+        A marker is a ``text:p`` holding one ``text:text-input`` whose
+        description is ``py3o://function="subtemplate('<code>')"`` and no
+        other text.
 
         :param root: lxml element to scan
         :return: list of ``(paragraph, code)`` tuples in document order
+        :raises UserError: if a ``subtemplate(...)`` field is not a literal
+            code or does not stand alone in its paragraph
         """
         found = []
+        input_tag = _clark("text", "text-input")
+        desc_attr = _clark("text", "description")
         for para in root.iter(_clark("text", "p")):
-            text = "".join(para.itertext()).strip()
-            match = _INCLUDE_MARKER_RE.fullmatch(text)
-            if match:
-                found.append((para, match.group(1)))
+            fields = [
+                node.get(desc_attr) or ""
+                for node in para.iter(input_tag)
+                if _INCLUDE_CALL_RE.search(node.get(desc_attr) or "")
+            ]
+            if not fields:
+                continue
+            match = _INCLUDE_FIELD_RE.fullmatch(fields[0].strip())
+            alone = (
+                len(fields) == 1
+                and len(list(para.iter(input_tag))) == 1
+                and not self._py3o_text_outside_inputs(para).strip()
+            )
+            if not match or not alone:
+                self._py3o_include_error(
+                    fields[0],
+                    _("The subtemplate() field is not valid"),
+                    _(
+                        "Use subtemplate('<code>') with a literal code, "
+                        "alone in its paragraph"
+                    ),
+                )
+            found.append((para, match.group(2) or match.group(3) or ""))
         return found
 
     def _py3o_ensure_container(self, root, tag, successor_tags):
