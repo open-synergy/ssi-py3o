@@ -4,6 +4,9 @@
 
 from . import (
     py3o_report,
+    py3o_report_include,
+    py3o_report_subreport,
+    py3o_template,
     py3o_report_extender,
     ir_actions_report,
     res_company,

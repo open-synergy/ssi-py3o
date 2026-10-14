@@ -1,0 +1,106 @@
+options:
+  auto_refresh: true
+
+scenarios:
+  - name: "include_code — valid and unique code is stored"
+    steps:
+      - step: "Create template with a valid include code"
+        action: "create"
+        model: "py3o.template"
+        save_as: "template"
+        values:
+          name: "Include Template"
+          filetype: "odt"
+          include_code: "test_include_code"
+      - step: "Assert include code is stored"
+        action: "assert"
+        target: "template"
+        asserts:
+          include_code:
+            type: "value"
+            expected: "test_include_code"
+
+  - name: "include_code — duplicate code is rejected"
+    steps:
+      - step: "Create first template"
+        action: "create"
+        model: "py3o.template"
+        values:
+          name: "Include Template 1"
+          filetype: "odt"
+          include_code: "dup_code"
+      - step: "Create second template with the same code"
+        action: "create"
+        model: "py3o.template"
+        expect_error:
+          type: "ValidationError"
+          message_contains: "already used"
+        values:
+          name: "Include Template 2"
+          filetype: "odt"
+          include_code: "dup_code"
+
+  - name: "include_code — invalid format is rejected"
+    steps:
+      - step: "Create template with an uppercase code"
+        action: "create"
+        model: "py3o.template"
+        expect_error:
+          type: "ValidationError"
+          message_contains: "invalid format"
+        values:
+          name: "Include Template 3"
+          filetype: "odt"
+          include_code: "Bad-Code"
+
+  - name: "include_code — typing a used code is answered before saving"
+    steps:
+      - step: "Create the template that owns the code"
+        action: "create"
+        model: "py3o.template"
+        values:
+          name: "Include Template 4"
+          filetype: "odt"
+          include_code: "used_code"
+      - step: "Typing the same code in a new form runs the onchange"
+        action: "form"
+        model: "py3o.template"
+        save: false
+        ops:
+          - set: {name: "Include Template 5"}
+          - set: {include_code: "used_code"}
+          - assert:
+              include_code:
+                type: "value"
+                expected: "used_code"
+      - step: "Saving that form is still refused"
+        action: "form"
+        model: "py3o.template"
+        expect_error:
+          type: "ValidationError"
+          message_contains: "already used"
+        ops:
+          - set: {name: "Include Template 6"}
+          - set: {include_code: "used_code"}
+
+  - name: "include_code — an empty code is always allowed"
+    steps:
+      - step: "Create a template without include code"
+        action: "create"
+        model: "py3o.template"
+        values:
+          name: "Include Template 7"
+          filetype: "odt"
+      - step: "Create a second template without include code"
+        action: "create"
+        model: "py3o.template"
+        values:
+          name: "Include Template 8"
+          filetype: "odt"
+      - step: "Clearing the code in a form is accepted"
+        action: "form"
+        model: "py3o.template"
+        ops:
+          - set: {name: "Include Template 9"}
+          - set: {include_code: "cleared_code"}
+          - set: {include_code: ""}

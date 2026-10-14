@@ -373,6 +373,7 @@ class Py3oReport(models.TransientModel):
 
     def get_template(self, model_instance):
         report_bytes = super().get_template(model_instance)
+        report_bytes = self._py3o_apply_includes(report_bytes)
         report_bytes = self._py3o_ensure_html_table_style(report_bytes)
         plain_sizes, heading_sizes = self._py3o_collect_html_font_sizes(model_instance)
         report_bytes = self._py3o_ensure_html_text_styles(
@@ -384,7 +385,8 @@ class Py3oReport(models.TransientModel):
         self._py3o_check_html_fonts(report_bytes)
         report = self.ir_actions_report_id
         base_bytes = report._py3o_get_base_template_data()
-        if not base_bytes:
+        if not base_bytes or self.env.context.get("py3o_in_subreport"):
+            # A sub-report never carries its own letterhead
             return report_bytes
         strict = self.env.context.get("py3o_base_template_strict")
         try:

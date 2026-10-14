@@ -18,5 +18,6 @@
     "data": [
         "views/ir_actions_report.xml",
         "views/res_company.xml",
+        "views/py3o_template.xml",
     ],
 }
