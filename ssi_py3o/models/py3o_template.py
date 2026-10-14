@@ -40,7 +40,7 @@ class Py3oTemplate(models.Model):
         return self.search(domain, limit=1)
 
     @api.onchange("include_code")
-    def _onchange_include_code(self):
+    def onchange_include_code(self):
         """Warn while typing when the include code is already taken.
 
         The save is still refused by ``_check_include_code``; this only
