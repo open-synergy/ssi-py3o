@@ -11,8 +11,9 @@ CI runs on Python 3.6 -- no walrus operator.
 """
 import base64
 import os
+import tempfile
 from io import BytesIO
-from zipfile import ZipFile
+from zipfile import ZIP_STORED, ZipFile
 
 from lxml import etree
 from odoo_yaml_test import YamlTransactionCase
@@ -271,6 +272,41 @@ class TestSubreport(YamlTransactionCase):
         with self.assertRaises(UserError) as caught:
             self._render(self._call())
         self.assertIn(SUB_NAME, str(caught.exception))
+
+    def test_caller_not_odt(self):
+        """Fail closed when the rendered caller is an ODS file.
+
+        Pure Python, trigger P4 (L-05, L-07, L-08, L-19).
+        """
+        out = BytesIO()
+        with ZipFile(BytesIO(body_odt())) as zin, ZipFile(out, "w") as zout:
+            for info in zin.infolist():
+                if info.filename == "mimetype":
+                    zout.writestr(
+                        "mimetype",
+                        "application/vnd.oasis.opendocument.spreadsheet",
+                        compress_type=ZIP_STORED,
+                    )
+                else:
+                    zout.writestr(info, zin.read(info.filename))
+        caller = self._create_report(
+            "Caller Sheet",
+            "ssi_py3o.test_subreport_sheet",
+            "res.partner",
+            body_odt(),
+        )
+        engine = self.env["py3o.report"].create({"ir_actions_report_id": caller.id})
+        path = os.path.join(tempfile.mkdtemp(), "caller.ods")
+        with open(path, "wb") as ods_file:
+            ods_file.write(out.getvalue())
+        try:
+            with self.assertRaises(UserError) as caught:
+                engine._py3o_resolve_subreports(path, [(SUB_NAME, self.acc1)])
+        finally:
+            os.unlink(path)
+        message = str(caught.exception)
+        self.assertIn("Caller Sheet", message)
+        self.assertIn(SUB_NAME, message)
 
     def test_access_denied(self):
         """Refuse a user outside the groups of the sub-report.
